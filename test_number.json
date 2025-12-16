@@ -1,0 +1,212 @@
+{
+    "questions": {
+        "name": "questions",
+        "description": "问题定义表",
+        "fields": [
+            {
+                "name": "id",
+                "type": "INTEGER",
+                "is_primary": true,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "content",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "问题的描述或唯一标识代码"
+            },
+            {
+                "name": "level1_name",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "一级指标名称"
+            },
+            {
+                "name": "level1_description",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "一级指标描述"
+            },
+            {
+                "name": "level2_name",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "二级指标名称"
+            },
+            {
+                "name": "level2_description",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "二级指标描述"
+            }
+        ],
+        "foreign_keys": []
+    },
+    "schools": {
+        "name": "schools",
+        "description": "学校基本信息表",
+        "fields": [
+            {
+                "name": "id",
+                "type": "INTEGER",
+                "is_primary": true,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "email",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "phone",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "province",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "city",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "district",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "school_name",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "year",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "school_type",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "school_area_type",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "class_num",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "teacher_num",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "student_num",
+                "type": "TEXT",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "data_mark",
+                "type": "INTEGER",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": null
+            }
+        ],
+        "foreign_keys": []
+    },
+    "school_answers": {
+        "name": "school_answers",
+        "description": "学校答案数据表",
+        "fields": [
+            {
+                "name": "id",
+                "type": "INTEGER",
+                "is_primary": true,
+                "is_foreign": false,
+                "description": null
+            },
+            {
+                "name": "school_id",
+                "type": "INTEGER",
+                "is_primary": false,
+                "is_foreign": true,
+                "description": "外键, 关联到 schools.id"
+            },
+            {
+                "name": "question_id",
+                "type": "INTEGER",
+                "is_primary": false,
+                "is_foreign": true,
+                "description": "外键, 关联到 questions.id"
+            },
+            {
+                "name": "value",
+                "type": "REAL",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "直接存储的数值答案 (例如数量、比例等)"
+            }
+        ],
+        "foreign_keys": [
+            {
+                "id": 0,
+                "seq": 0,
+                "table": "schools",
+                "from": "school_id",
+                "to": "id",
+                "on_update": "CASCADE",
+                "on_delete": "CASCADE",
+                "match": "NONE"
+            },
+            {
+                "id": 1,
+                "seq": 0,
+                "table": "questions",
+                "from": "question_id",
+                "to": "id",
+                "on_update": "CASCADE",
+                "on_delete": "CASCADE",
+                "match": "NONE"
+            }
+        ]
+    }
+}

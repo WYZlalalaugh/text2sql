@@ -1,0 +1,28 @@
+{
+  "prompt": "<DB=SQLITE>\n# Question\n上海市宝山区同达小学的教师总数是多少\n\n# Schema\n{\n  \"questions\": {\n    \"description\": \"问题定义表\",\n    \"columns\": [\n      \"id\",\n      \"content\",\n      \"level1_name\",\n      \"level1_description\",\n      \"level2_name\",\n      \"level2_description\"\n    ],\n    \"primary_keys\": [\n      \"id\"\n    ],\n    \"foreign_keys\": []\n  },\n  \"schools\": {\n    \"description\": \"学校基本信息表\",\n    \"columns\": [\n      \"id\",\n      \"email\",\n      \"phone\",\n      \"province\",\n      \"city\",\n      \"district\",\n      \"school_name\",\n      \"year\",\n      \"school_type\",\n      \"school_area_type\",\n      \"class_num\",\n      \"teacher_num\",\n      \"student_num\",\n      \"data_mark\"\n    ],\n    \"primary_keys\": [\n      \"id\"\n    ],\n    \"foreign_keys\": []\n  },\n  \"school_answers\": {\n    \"description\": \"学校答案数据表\",\n    \"columns\": [\n      \"id\",\n      \"school_id\",\n      \"question_id\",\n      \"value\"\n    ],\n    \"primary_keys\": [\n      \"id\"\n    ],\n    \"foreign_keys\": [\n      {\n        \"id\": 0,\n        \"seq\": 0,\n        \"table\": \"schools\",\n        \"from\": \"school_id\",\n        \"to\": \"id\",\n        \"on_update\": \"CASCADE\",\n        \"on_delete\": \"CASCADE\",\n        \"match\": \"NONE\"\n      },\n      {\n        \"id\": 1,\n        \"seq\": 0,\n        \"table\": \"questions\",\n        \"from\": \"question_id\",\n        \"to\": \"id\",\n        \"on_update\": \"CASCADE\",\n        \"on_delete\": \"CASCADE\",\n        \"match\": \"NONE\"\n      }\n    ]\n  }\n}\n\n# Instruction\nGenerate a valid SQL query.",
+  "target_sql": "",
+  "skeleton": "",
+  "normalized_sql": "",
+  "db_engine": "sqlite",
+  "db_path": "",
+  "db_connection": null,
+  "latency_ms": null,
+  "metadata": {
+    "db_engine": "sqlite",
+    "db_path": ""
+  }
+}
+{
+  "prompt": "<DB=SQLITE>\n# Question\n上海市宝山区同达小学能够利用信息技术开展教学的学科教师比例\n\n# Schema\n{\n  \"questions\": {\n    \"description\": \"每个问题的具体内容存放在此\",\n    \"columns\": [\n      \"id\",\n      \"content\",\n      \"level1_name\",\n      \"level1_description\",\n      \"level2_name\",\n      \"level2_description\"\n    ],\n    \"primary_keys\": [\n      \"id\"\n    ],\n    \"foreign_keys\": []\n  },\n  \"schools\": {\n    \"description\": \"学校基本信息存放再次\",\n    \"columns\": [\n      \"id\",\n      \"email\",\n      \"phone\",\n      \"province\",\n      \"city\",\n      \"district\",\n      \"school_name\",\n      \"year\",\n      \"school_type\",\n      \"school_area_type\",\n      \"class_num\",\n      \"teacher_num\",\n      \"student_num\",\n      \"data_mark\"\n    ],\n    \"primary_keys\": [\n      \"id\"\n    ],\n    \"foreign_keys\": []\n  },\n  \"school_answers\": {\n    \"description\": \"学校对于每个问题的答案存放在此\",\n    \"columns\": [\n      \"id\",\n      \"school_id\",\n      \"question_id\",\n      \"value\"\n    ],\n    \"primary_keys\": [\n      \"id\"\n    ],\n    \"foreign_keys\": [\n      {\n        \"id\": 0,\n        \"seq\": 0,\n        \"table\": \"schools\",\n        \"from\": \"school_id\",\n        \"to\": \"id\",\n        \"on_update\": \"CASCADE\",\n        \"on_delete\": \"CASCADE\",\n        \"match\": \"NONE\"\n      },\n      {\n        \"id\": 1,\n        \"seq\": 0,\n        \"table\": \"questions\",\n        \"from\": \"question_id\",\n        \"to\": \"id\",\n        \"on_update\": \"CASCADE\",\n        \"on_delete\": \"CASCADE\",\n        \"match\": \"NONE\"\n      }\n    ]\n  }\n}\n\n# Instruction\nGenerate a valid SQL query.",
+  "target_sql": "",
+  "skeleton": "",
+  "normalized_sql": "",
+  "db_engine": "sqlite",
+  "db_path": "",
+  "db_connection": null,
+  "latency_ms": null,
+  "metadata": {
+    "db_engine": "sqlite",
+    "db_path": ""
+  }
+}

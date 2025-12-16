@@ -1,0 +1,63 @@
+{
+    "t_school_infrastructure": [
+        {
+            "name": "id",
+            "type": "int",
+            "comment": "主键"
+        },
+        {
+            "name": "school_id",
+            "type": "int",
+            "comment": "学校ID"
+        },
+        {
+            "name": "terminal_count",
+            "type": "int",
+            "comment": "多媒体终端数量"
+        },
+        {
+            "name": "bandwidth",
+            "type": "float",
+            "comment": "带宽(Mbps)"
+        },
+        {
+            "name": "coverage",
+            "type": "float",
+            "comment": "网络覆盖率"
+        }
+    ],
+    "t_digital_rules": [
+        {
+            "name": "id",
+            "type": "int",
+            "comment": "主键"
+        },
+        {
+            "name": "rule_name",
+            "type": "varchar",
+            "comment": "制度名称"
+        },
+        {
+            "name": "publish_date",
+            "type": "date",
+            "comment": "发布日期"
+        }
+    ],
+    "t_digital_staff": [
+        {
+            "name": "id",
+            "type": "int",
+            "comment": "主键"
+        },
+        {
+            "name": "staff_count",
+            "type": "int",
+            "comment": "人员数量"
+        },
+        {
+            "name": "department",
+            "type": "varchar",
+            "comment": "部门"
+        }
+    ]
+}
