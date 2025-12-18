@@ -8,7 +8,7 @@
     <!-- Element Plus 样式 -->
     <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
     <!-- 自定义样式 -->
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=6">
 </head>
 
 <body>
@@ -246,18 +246,15 @@
                                     <div class="response-text" v-html="formatMarkdown(msg.content)"></div>
 
                                     <!-- 数据表格 (如果有 SQL 结果) -->
-                                    <div class="data-result" v-if="msg.sqlResult">
-                                        <div class="result-header">
-                                            <svg class="icon">
+                                    <!-- 数据结果按钮 -->
+                                    <div class="data-result-btn" v-if="msg.sqlResult && msg.sqlResult.length > 0"
+                                        style="margin-top: 10px;">
+                                        <el-button type="success" plain size="small" @click="showData(msg.sqlResult)">
+                                            <svg class="icon" style="margin-right:4px">
                                                 <use xlink:href="#icon-table"></use>
                                             </svg>
-                                            查询结果
-                                        </div>
-                                        <el-table :data="msg.sqlResult" style="width: 100%" border size="small"
-                                            height="300">
-                                            <el-table-column v-for="(val, key) in msg.sqlResult[0]" :key="key"
-                                                :prop="key" :label="key" show-overflow-tooltip></el-table-column>
-                                        </el-table>
+                                            查看查询数据 ({{ msg.sqlResult.length }} 条)
+                                        </el-button>
                                     </div>
 
                                     <!-- SQL 代码 (折叠) -->
@@ -330,7 +327,17 @@
                     </div>
                 </div>
             </main>
+            </main>
         </div>
+
+        <!-- 数据展示弹窗 -->
+        <el-dialog v-model="dialogVisible" title="查询数据详情" width="80%">
+            <el-table :data="tableData" border stripe style="width: 100%" height="500">
+                <el-table-column v-for="(val, key) in (tableData.length > 0 ? tableData[0] : {})" :key="key" :prop="key"
+                    :label="key" min-width="120" show-overflow-tooltip>
+                </el-table-column>
+            </el-table>
+        </el-dialog>
     </div>
 
     <!-- 引入 Vue 3 和 Element Plus JS -->
@@ -338,7 +345,7 @@
     <script src="https://unpkg.com/element-plus"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-    <script src="script.js?v=4"></script>
+    <script src="script.js?v=6"></script>
 </body>
 
 </html>

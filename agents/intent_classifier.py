@@ -23,9 +23,17 @@ def create_intent_classifier(llm_client, prompt_builder):
         clarification_response = state.get("clarification_response", "")
         
         # 关键：如果用户已提供澄清回复，保持原意图为 metric_query，跳过重新分类
+        # 关键：如果用户已提供澄清回复，保持原意图为 metric_query，但需要合并意图
         if clarification_response:
+            # 简单合并策略：将澄清回复作为上下文附加到原始查询后
+            refined_intent = f"{user_query} (用户补充: {clarification_response})"
+            
+            # 尝试从状态中保留原始意图类型
+            original_intent = state.get("intent_type") or IntentType.METRIC_QUERY
+            
             return {
-                "intent_type": IntentType.METRIC_QUERY,  # 澄清场景保持 metric_query
+                "intent_type": original_intent,          # 保持原始意图
+                "refined_intent": refined_intent,        # 传递合并后的明确意图
                 "intent_analysis": f"用户提供了澄清回复: {clarification_response}",
                 "current_node": "intent_classifier"
             }
@@ -70,7 +78,8 @@ def create_intent_classifier(llm_client, prompt_builder):
             # 转换意图类型
             intent_type_str = result.get("intent_type", "chitchat")
             intent_type_map = {
-                "simple_query": IntentType.SIMPLE_QUERY,
+                "value_query": IntentType.VALUE_QUERY,      # 新增
+                "simple_query": IntentType.VALUE_QUERY,     # 兼容旧名称
                 "metric_query": IntentType.METRIC_QUERY,
                 "metric_definition": IntentType.METRIC_DEFINITION,
                 "chitchat": IntentType.CHITCHAT

@@ -13,6 +13,15 @@ const app = createApp({
         // 当前回答的步骤（用于流式显示）
         const currentSteps = ref([]);
 
+        // 数据展示弹窗
+        const dialogVisible = ref(false);
+        const tableData = ref([]);
+
+        const showData = (data) => {
+            tableData.value = data;
+            dialogVisible.value = true;
+        };
+
         // 推荐问题
         const suggestedQuestions = ref([
             '查询湖北省不同地市的学校数量',
@@ -130,6 +139,9 @@ const app = createApp({
                                     if (event.sql) {
                                         tempMessage.sql = event.sql;
                                     }
+                                    if (event.data) {
+                                        tempMessage.sqlResult = event.data;
+                                    }
                                     tempMessage.isStreaming = false;
                                 } else if (event.type === 'error') {
                                     // 错误
@@ -190,7 +202,10 @@ const app = createApp({
             handleEnter,
             sendMessage,
             resetChat,
-            formatMarkdown
+            formatMarkdown,
+            dialogVisible,
+            tableData,
+            showData
         };
     }
 });

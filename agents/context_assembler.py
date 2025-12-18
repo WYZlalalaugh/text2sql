@@ -133,8 +133,8 @@ def create_context_assembler(prompt_builder: PromptBuilder = None):
         if selected_metrics:
             filtered_metrics_text = filter_metrics_by_selection(full_metrics, selected_metrics)
         else:
-            # 没有 Query Plan（可能是简单查询），使用全量
-            filtered_metrics_text = json.dumps(full_metrics, ensure_ascii=False, indent=2)
+            # 没有选择指标（可能是简单数值查询），不注入指标上下文，避免干扰
+            filtered_metrics_text = ""
         
         # 获取域配置和 PromptBuilder
         domain = get_domain_config()

@@ -42,7 +42,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     prompt_builder = PromptBuilder(domain_config)
     
     # 初始化向量存储
-    vector_store = get_vector_store(embedding_client)
+    # vector_store = get_vector_store(embedding_client)
     
     # 创建各个节点（传入 prompt_builder）
     intent_classifier = create_intent_classifier(llm_client, prompt_builder)
@@ -81,7 +81,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     workflow = StateGraph(AgentState)
     
     # 添加节点
-    workflow.add_node("vector_search", vector_search_node)
+    # workflow.add_node("vector_search", vector_search_node)
     workflow.add_node("intent_classifier", intent_classifier)
     workflow.add_node("ambiguity_checker", ambiguity_checker)
     workflow.add_node("query_planner", query_planner)  # 新增
@@ -105,10 +105,10 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             return "response_generator"
         elif intent_type == IntentType.METRIC_DEFINITION:
             return "response_generator"
-        elif intent_type == IntentType.SIMPLE_QUERY:
-            return "query_planner"  # 改：简单查询也经过规划器
-        else:  # METRIC_QUERY
-            return "ambiguity_checker"
+        elif intent_type == IntentType.VALUE_QUERY:
+            return "query_planner"  # 数值查询：直接进入规划器
+        else:  # METRIC_QUERY - 指标聚合查询
+            return "ambiguity_checker"  # 可能需要澄清聚合方式
     
     workflow.add_conditional_edges(
         "intent_classifier",

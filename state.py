@@ -8,10 +8,13 @@ from enum import Enum
 
 class IntentType(str, Enum):
     """意图类型枚举"""
-    SIMPLE_QUERY = "simple_query"           # 简单数据查询（不涉及指标）
-    METRIC_QUERY = "metric_query"           # 涉及指标体系的查询
+    VALUE_QUERY = "value_query"             # 数值查询（查询具体问题的原始数值）
+    METRIC_QUERY = "metric_query"           # 指标聚合查询（需要聚合/加权计算）
     METRIC_DEFINITION = "metric_definition" # 询问指标定义/说明
     CHITCHAT = "chitchat"                   # 闲聊/帮助/指南
+    
+    # 向后兼容别名
+    SIMPLE_QUERY = "value_query"            # 别名，保持兼容
 
 
 @dataclass

@@ -10,6 +10,17 @@ import os
 import re
 import json
 import asyncio
+from decimal import Decimal
+from datetime import date, datetime
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """处理 Decimal 和日期类型的 JSON 编码器"""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, (date, datetime)):
+            return obj.isoformat()
+        return super().default(obj)
 
 from config import config
 from state import AgentState
@@ -97,7 +108,8 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
         
         # 使用 stream 方法执行图
         current_step = 1
-        final_state = None
+        # 初始化累积状态，确保不丢失初始信息
+        accumulated_state = initial_state.copy()
         
         # 配置递归限制
         config = {"recursion_limit": 50}
@@ -105,8 +117,9 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
         for event in graph.stream(initial_state, config=config):
             # event 是 {node_name: node_output} 的字典
             for node_name, node_output in event.items():
-                # 保存最新状态
-                final_state = node_output
+                # 合并最新状态
+                if node_output:
+                    accumulated_state.update(node_output)
                 
                 if node_name in NODE_DISPLAY_NAMES:
                     step_data = {
@@ -138,9 +151,12 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                         step_data['detail'] = "SQL 语句已生成"
                         step_data['sql'] = node_output.get('generated_sql', '')
                     elif node_name == "sql_executor":
-                        if "query_results" in node_output:
-                            results = node_output.get('query_results', [])
-                            step_data['detail'] = f"查询返回 {len(results)} 条结果"
+                        if "execution_result" in node_output:
+                            results = node_output.get('execution_result', [])
+                            if results:
+                                step_data['detail'] = f"查询返回 {len(results)} 条结果"
+                            else:
+                                step_data['detail'] = "查询没返回结果"
                         elif "execution_error" in node_output:
                             step_data['detail'] = "执行出错，准备纠错"
                     
@@ -149,9 +165,10 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                     await asyncio.sleep(0.1)
         
         # 发送最终结果并更新会话状态
-        if final_state:
-            # 更新会话状态
-            session["state"] = final_state
+        if accumulated_state:
+            # 更新会话状态（保存完整的累积状态）
+            session["state"] = accumulated_state
+            final_state = accumulated_state # 为了兼容下面的代码
             need_clarification = final_state.get("ambiguity_detected", False)
             session["waiting_for_clarification"] = need_clarification
             
@@ -160,9 +177,10 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                 'response': final_state.get("final_response", ""),
                 'sql': final_state.get("generated_sql"),
                 'need_clarification': need_clarification,
-                'intent_type': str(final_state.get("intent_type", ""))
+                'intent_type': str(final_state.get("intent_type", "")),
+                'data': final_state.get("execution_result")  # 修正字段名
             }
-            yield f"data: {json.dumps(result_data, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
         
         # 发送完成标记
         yield "data: [DONE]\n\n"
@@ -197,7 +215,7 @@ async def chat_stream(request: ChatRequest):
                 {"role": "user", "content": request.message}
             ],
             "clarification_count": previous_state.get("clarification_count", 0),
-            "refined_intent": request.message,  # 用澄清回复作为精炼意图
+            # "refined_intent": request.message, 
         }
         
         # 更新会话状态
@@ -209,12 +227,16 @@ async def chat_stream(request: ChatRequest):
                 
                 # 重新运行 Graph
                 current_step = 1
-                final_state = None
+                # 初始化累积状态
+                accumulated_state = new_state.copy()
+                
                 config_dict = {"recursion_limit": 50}
                 
                 for event in graph.stream(new_state, config=config_dict):
                     for node_name, node_output in event.items():
-                        final_state = node_output
+                        # 合并最新状态
+                        if node_output:
+                            accumulated_state.update(node_output)
                         
                         if node_name in NODE_DISPLAY_NAMES:
                             step_data = {
@@ -235,16 +257,18 @@ async def chat_stream(request: ChatRequest):
                             await asyncio.sleep(0.1)
                 
                 # 更新会话状态
-                if final_state:
-                    session["state"] = final_state
+                if accumulated_state:
+                    session["state"] = accumulated_state
+                    final_state = accumulated_state # 兼容下方变量名
                     
                     result_data = {
                         'type': 'result',
                         'response': final_state.get("final_response", ""),
                         'sql': final_state.get("generated_sql"),
-                        'need_clarification': final_state.get("ambiguity_detected", False)
+                        'need_clarification': final_state.get("ambiguity_detected", False),
+                        'data': final_state.get("execution_result")  # 修正字段名
                     }
-                    yield f"data: {json.dumps(result_data, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
                 
                 yield "data: [DONE]\n\n"
                 

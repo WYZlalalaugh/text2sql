@@ -18,6 +18,13 @@
                 "description": "问题的描述或唯一标识代码"
             },
             {
+                "name": "level3_weight",
+                "type": "REAL",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "三级指标权重"
+            },
+            {
                 "name": "level1_name",
                 "type": "TEXT",
                 "is_primary": false,
@@ -32,6 +39,13 @@
                 "description": "一级指标描述"
             },
             {
+                "name": "level1_weight",
+                "type": "REAL",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "一级指标权重"
+            },
+            {
                 "name": "level2_name",
                 "type": "TEXT",
                 "is_primary": false,
@@ -44,6 +58,13 @@
                 "is_primary": false,
                 "is_foreign": false,
                 "description": "二级指标描述"
+            },
+            {
+                "name": "level2_weight",
+                "type": "REAL",
+                "is_primary": false,
+                "is_foreign": false,
+                "description": "二级指标权重"
             }
         ],
         "foreign_keys": []
