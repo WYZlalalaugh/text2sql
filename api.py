@@ -141,12 +141,18 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                         plan = node_output.get('query_plan', {})
                         selected = plan.get('selected_metrics', [])
                         calc = plan.get('calculation_type', '')
+                        
                         if selected:
                             step_data['detail'] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
                         elif calc:
                             step_data['detail'] = f"计算类型: {calc}"
                         else:
-                            step_data['detail'] = "生成查询计划"
+                            step_data['detail'] = "正在规划查询路径..."
+                        
+                        # 重要：同时抓取推理计划用于流式展示
+                        if "reasoning_plan" in node_output:
+                            step_data['reasoning'] = node_output.get('reasoning_plan', '')
+
                     elif node_name == "sql_generator" and "generated_sql" in node_output:
                         step_data['detail'] = "SQL 语句已生成"
                         step_data['sql'] = node_output.get('generated_sql', '')
@@ -159,6 +165,14 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                                 step_data['detail'] = "查询没返回结果"
                         elif "execution_error" in node_output:
                             step_data['detail'] = "执行出错，准备纠错"
+                    elif node_name == "sql_corrector":
+                        step_data['detail'] = "AI 正在对执行结果进行反思和修正..."
+                        if "sql_reflection" in node_output:
+                            step_data['reflection'] = node_output.get('sql_reflection', '')
+                        if "generated_sql" in node_output:
+                            step_data['sql'] = node_output.get('generated_sql', '')
+
+
                     
                     yield f"data: {json.dumps(step_data, ensure_ascii=False)}\n\n"
                     current_step += 1
@@ -178,7 +192,9 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                 'sql': final_state.get("generated_sql"),
                 'need_clarification': need_clarification,
                 'intent_type': str(final_state.get("intent_type", "")),
+                'sql_reflection': final_state.get("sql_reflection"), # 新增反思字段
                 'data': final_state.get("execution_result")  # 修正字段名
+
             }
             yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
         

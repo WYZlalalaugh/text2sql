@@ -99,3 +99,8 @@ class AgentState(TypedDict, total=False):
     query_plan: Dict[str, Any]        # 结构化查询计划 (JSON)
     reasoning_plan: str               # 推理步骤文本
     selected_metrics: List[str]       # 规划器筛选出的指标列表
+    
+    # ReAct / 反思相关
+    sql_reflection: Optional[str]     # SQL 执行后的反思思考过程
+    execution_observation: Optional[str] # 格式化后的执行观测结果
+

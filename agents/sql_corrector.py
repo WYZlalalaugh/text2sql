@@ -25,74 +25,97 @@ def create_sql_corrector(llm_client, database_type: DatabaseType = DatabaseType.
     
     def sql_corrector_node(state: AgentState) -> Dict[str, Any]:
         """
-        SQL 纠错节点
-        
-        接收错误的 SQL 和错误信息，生成纠正后的 SQL
+        SQL 纠错/反思节点 (ReAct 范式)
         """
+        user_query = state.get("user_query", "")
         generated_sql = state.get("generated_sql", "")
-        execution_error = state.get("execution_error", "")
+        observation = state.get("execution_observation", "")
         assembled_prompt = state.get("assembled_prompt", "")
         
-        # 如果没有错误或没有 SQL，直接返回
-        if not execution_error or not generated_sql:
+        # 增加计数（放在最前面，确保无论结果如何，机会都消耗了）
+        correction_count = state.get("correction_count", 0) + 1
+        
+        # 如果没有 SQL，无法进行反思
+        if not generated_sql:
             return {
                 "current_node": "sql_corrector",
-                "correction_attempted": False
+                "correction_attempted": False,
+                "correction_count": correction_count
             }
         
         try:
-            # 从 assembled_prompt 中提取 schema 和 metric_context
-            # 简单处理：直接使用原始 assembled_prompt 的部分内容
+            # 提取上下文信息
             schema = _extract_schema_from_prompt(assembled_prompt)
             metric_context = _extract_metric_context_from_prompt(assembled_prompt)
             
-            # 构建纠错提示词
+            # 构建 ReAct 纠错提示词
             correction_prompt = build_sql_correction_prompt(
+                user_query=user_query,
                 invalid_sql=generated_sql,
-                error_message=execution_error,
+                observation=observation,
                 schema=schema,
                 metric_context=metric_context
             )
             
-            # 获取系统提示词
+            # 获取提示词并调用 LLM
             system_prompt = get_sql_correction_system_prompt(database_type)
-            
-            # 调用 LLM
-            # 注意：这里假设 llm_client 有一个 invoke_with_system 方法
-            # 如果没有，需要根据实际 LLM 客户端接口调整
             if hasattr(llm_client, 'invoke_with_system'):
-                response = llm_client.invoke_with_system(
-                    system_prompt=system_prompt,
-                    user_prompt=correction_prompt
-                )
+                response = llm_client.invoke_with_system(system_prompt=system_prompt, user_prompt=correction_prompt)
             else:
-                # 降级方案：将系统提示词和用户提示词合并
-                full_prompt = f"{system_prompt}\n\n{correction_prompt}"
-                response = llm_client.invoke(full_prompt)
+                response = llm_client.invoke(f"{system_prompt}\n\n{correction_prompt}")
             
-            # 提取纠正后的 SQL
             response_text = response.content if hasattr(response, 'content') else str(response)
-            corrected_sql = _extract_sql_from_response(response_text)
-            
-            # 增加纠错计数
-            correction_count = state.get("correction_count", 0) + 1
+            reflection, corrected_sql = _extract_reflection_and_sql(response_text)
             
             return {
                 "generated_sql": corrected_sql,
+                "sql_reflection": reflection,
                 "correction_attempted": True,
                 "correction_count": correction_count,
-                "execution_error": None,  # 清除旧错误信息
+                "execution_error": None,
                 "current_node": "sql_corrector"
             }
             
         except Exception as e:
             return {
-                "execution_error": f"SQL 纠错失败: {str(e)}",
+                "execution_error": f"SQL 纠错反思请求失败 (可能由于 Token/额度限制): {str(e)}",
                 "correction_attempted": True,
+                "correction_count": correction_count, # 关键：报错也要返回增加后的计数
                 "current_node": "sql_corrector"
             }
+
     
     return sql_corrector_node
+
+
+def _extract_reflection_and_sql(response_text: str) -> tuple[str, str]:
+    """从 LLM 响应中提取反思过程和 SQL"""
+    reflection = ""
+    sql = ""
+    
+    try:
+        # 查找 JSON 代码块或直接查找括号
+        start = response_text.find('{')
+        end = response_text.rfind('}') + 1
+        if start >= 0 and end > start:
+            json_str = response_text[start:end]
+            data = json.loads(json_str)
+            reflection = data.get("reflection", "")
+            sql = data.get("sql", "")
+            
+        if sql:
+            return reflection, _clean_sql(sql)
+    except:
+        pass
+
+    # 如果 JSON 解析失败，尝试正则表达式匹配 (兜底)
+    import re
+    sql_match = re.search(r"```sql\n(.*?)\n```", response_text, re.DOTALL)
+    if sql_match:
+        sql = sql_match.group(1).strip()
+    
+    return "无法解析详细反思过程，请参考新生成的 SQL。", sql or response_text
+
 
 
 def _extract_schema_from_prompt(assembled_prompt: str) -> str:

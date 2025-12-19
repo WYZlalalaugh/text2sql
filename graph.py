@@ -18,7 +18,7 @@ from prompts.sql_rules import DatabaseType
 
 
 def create_graph(llm_client, embedding_client=None, db_connection=None, sql_model_client=None, 
-                 domain_config=None, database_type=DatabaseType.MYSQL, max_correction_attempts=2):
+                 domain_config=None, database_type=DatabaseType.MYSQL, max_correction_attempts=3):
     """
     创建 LangGraph 工作流
     
@@ -143,16 +143,32 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     workflow.add_edge("context_assembler", "sql_generator")
     workflow.add_edge("sql_generator", "sql_executor")
     
-    # SQL 执行后的条件路由：检查是否需要纠错
+    # SQL 执行后的条件路由：检查是否需要纠错/反思
     def route_after_sql_execution(state: AgentState) -> Literal["sql_corrector", "response_generator"]:
         execution_error = state.get("execution_error")
+        execution_result = state.get("execution_result")
         correction_count = state.get("correction_count", 0)
-        max_attempts = state.get("max_correction_attempts", max_correction_attempts)
         
-        # 如果有错误且未超过最大重试次数，进行纠错
-        if execution_error and correction_count < max_attempts:
-            return "sql_corrector"
+        # 获取最大允许重试次数，默认为 3
+        max_limit = state.get("max_correction_attempts", 3)
+        
+        # 场景 1: 数据库硬报错 (语法/表名错误)
+        if execution_error:
+            if correction_count < max_limit:
+                return "sql_corrector"
+            return "response_generator"
+        
+        # 场景 2: 结果为空 (业务逻辑/筛选值问题)
+        # 注意：空结果反思次数应更保守，此处设定总纠错次数小于 2 次时才尝试针对空结果反思
+        if (execution_result is not None and len(execution_result) == 0):
+            if correction_count < 2:  # 空结果尝试 2 次，通常能解决 LIKE 问题
+                return "sql_corrector"
+            
+        # 场景 3: 正常结束或达到限制
         return "response_generator"
+
+
+
     
     workflow.add_node("sql_corrector", sql_corrector)
     
@@ -166,14 +182,12 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     )
     
     # 纠错后重新执行 SQL
-    def increment_correction_count(state: AgentState) -> Dict[str, Any]:
-        return {"correction_count": state.get("correction_count", 0) + 1}
-    
     workflow.add_edge("sql_corrector", "sql_executor")
     
     # 结束节点
     workflow.add_edge("response_generator", END)
     workflow.add_edge("clarification_return", END)
+
     
     # 编译
     app = workflow.compile()

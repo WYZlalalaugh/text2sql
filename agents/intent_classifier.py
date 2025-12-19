@@ -35,8 +35,10 @@ def create_intent_classifier(llm_client, prompt_builder):
                 "intent_type": original_intent,          # 保持原始意图
                 "refined_intent": refined_intent,        # 传递合并后的明确意图
                 "intent_analysis": f"用户提供了澄清回复: {clarification_response}",
+                "correction_count": 0,                   # 初始化计数器
                 "current_node": "intent_classifier"
             }
+
         
         # 加载全量指标体系 (不再使用 matched_metrics)
         full_metrics_text = ""
@@ -89,14 +91,18 @@ def create_intent_classifier(llm_client, prompt_builder):
             return {
                 "intent_type": intent_type,
                 "intent_analysis": result.get("analysis", ""),
+                "correction_count": 0,                   # 初始化计数器
                 "current_node": "intent_classifier"
             }
+
             
         except json.JSONDecodeError:
             return {
                 "intent_type": IntentType.CHITCHAT,
                 "intent_analysis": "无法解析 LLM 响应",
+                "correction_count": 0,                   # 初始化计数器
                 "current_node": "intent_classifier"
             }
+
     
     return intent_classifier_node

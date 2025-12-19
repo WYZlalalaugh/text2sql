@@ -242,8 +242,41 @@
                                         </el-collapse>
                                     </div>
 
+                                    <!-- 查询规划推理 (Query Reasoning) -->
+                                    <div class="ai-reasoning" v-if="msg.reasoning"
+                                        style="margin: 12px 0; padding: 12px; border-left: 4px solid #409eff; background: #ecf5ff; border-radius: 4px;">
+                                        <div
+                                            style="font-size: 13px; font-weight: bold; color: #409eff; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
+                                            <svg class="icon" style="width:14px; height:14px; color:#409eff;">
+                                                <use xlink:href="#icon-step"></use>
+                                            </svg>
+                                            查询执行规划：
+                                        </div>
+                                        <div style="font-size: 13px; color: #666; white-space: pre-wrap;">
+                                            {{ msg.reasoning }}
+                                        </div>
+                                    </div>
+
+                                    <!-- AI 反思/ReAct Thought -->
+
+                                    <div class="ai-reflection" v-if="msg.reflection"
+                                        style="margin: 12px 0; padding: 12px; border-left: 4px solid #e6a23c; background: #fdf6ec; border-radius: 4px;">
+                                        <div
+                                            style="font-size: 13px; font-weight: bold; color: #e6a23c; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
+                                            <i class="el-icon-warning-outline"></i>
+                                            <svg class="icon" style="width:14px; height:14px;">
+                                                <use xlink:href="#icon-correct"></use>
+                                            </svg>
+                                            AI 执行反思：
+                                        </div>
+                                        <div style="font-size: 13px; color: #666; font-style: italic;">
+                                            {{ msg.reflection }}
+                                        </div>
+                                    </div>
+
                                     <!-- 文本回答 -->
                                     <div class="response-text" v-html="formatMarkdown(msg.content)"></div>
+
 
                                     <!-- 数据表格 (如果有 SQL 结果) -->
                                     <!-- 数据结果按钮 -->
@@ -343,9 +376,8 @@
     <!-- 引入 Vue 3 和 Element Plus JS -->
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
-    <script src="script.js?v=6"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> <!-- 脚本 -->
+    <script src="/ui/script.js?v=8"></script>
 </body>
 
 </html>

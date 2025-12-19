@@ -17,6 +17,27 @@ const app = createApp({
         const dialogVisible = ref(false);
         const tableData = ref([]);
 
+        // 打字机效果处理函数
+        const typeWriter = (obj, key, text, speed = 15) => {
+            if (!text) return;
+            // 如果已经在输入相同内容，跳过
+            if (obj[key] && text.startsWith(obj[key]) && obj[key].length > 0 && obj[key].length < text.length) {
+                // 部分更新逻辑（如果需要支持真正的流式，但目前节点输出是完整的）
+            }
+
+            let i = 0;
+            obj[key] = "";
+            const timer = setInterval(() => {
+                if (i < text.length) {
+                    obj[key] += text.charAt(i);
+                    i++;
+                } else {
+                    clearInterval(timer);
+                }
+            }, speed);
+        };
+
+
         const showData = (data) => {
             tableData.value = data;
             dialogVisible.value = true;
@@ -133,15 +154,31 @@ const app = createApp({
                                         tempMessage.sql = event.sql;
                                     }
 
+                                    // 处理流式推理和反思
+                                    if (event.reasoning) {
+                                        typeWriter(tempMessage, 'reasoning', event.reasoning);
+                                    }
+                                    if (event.reflection) {
+                                        typeWriter(tempMessage, 'reflection', event.reflection);
+                                    }
+
                                 } else if (event.type === 'result') {
                                     // 最终结果
                                     tempMessage.content = event.response;
                                     if (event.sql) {
                                         tempMessage.sql = event.sql;
                                     }
+                                    if (event.sql_reflection) {
+                                        // 最终结果中如果还有反思，确保显示（通常步骤中已经流式显示了）
+                                        if (!tempMessage.reflection) {
+                                            typeWriter(tempMessage, 'reflection', event.sql_reflection);
+                                        }
+                                    }
+
                                     if (event.data) {
                                         tempMessage.sqlResult = event.data;
                                     }
+
                                     tempMessage.isStreaming = false;
                                 } else if (event.type === 'error') {
                                     // 错误

@@ -43,8 +43,12 @@ def create_sql_executor(db_connection=None):
                 # 尝试创建新连接
                 result = execute_sql(generated_sql)
             
+            # 生成观测结果（用于 ReAct 反思）
+            observation = format_observation(result)
+            
             return {
                 "execution_result": result,
+                "execution_observation": observation,
                 "execution_error": None,
                 "current_node": "sql_executor"
             }
@@ -56,11 +60,33 @@ def create_sql_executor(db_connection=None):
             
             return {
                 "execution_result": None,
+                "execution_observation": f"ERROR: [{error_type}] {error_message}",
                 "execution_error": f"[{error_type}] {error_message}",
                 "current_node": "sql_executor"
             }
     
     return sql_executor_node
+
+
+def format_observation(result: List[Dict[str, Any]]) -> str:
+    """格式化执行结果观测，防止 Token 爆炸"""
+    if not result:
+        return "Observation: 执行成功。返回了 0 条记录。这意味着 WHERE 条件可能设置得过于严格，或者数据库中不存在匹配该字符串的值（例如全称/简称不匹配）。"
+    
+    row_count = len(result)
+    columns = list(result[0].keys()) if row_count > 0 else []
+    
+    if row_count <= 100:
+        return f"Observation: 执行成功。返回了 {row_count} 条记录：\n{json.dumps(result, ensure_ascii=False)}"
+    
+    # 结果过多（超过100条），进行摘要展示
+    sample = result[:5]
+    return (
+        f"Observation: 执行成功。返回了大量结果（共 {row_count} 条）。\n"
+        f"字段列表: {columns}\n"
+        f"前 5 条样本数据: {json.dumps(sample, ensure_ascii=False)}\n"
+        f"提示：如果你的原始意图是获取宏观统计数据而非海量明细，请确认是否需要增加聚合函数或更严格的筛选条件。"
+    )
 
 
 def is_safe_sql(sql: str) -> bool:
