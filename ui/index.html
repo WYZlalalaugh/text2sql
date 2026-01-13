@@ -8,7 +8,7 @@
     <!-- Element Plus 样式 -->
     <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
     <!-- 自定义样式 -->
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=9">
 </head>
 
 <body>
@@ -109,6 +109,11 @@
                 </div>
             </div>
             <div class="nav-right">
+                <div class="suggestion-toggle"
+                    style="margin-right: 20px; display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 13px; color: #666;">智能推荐</span>
+                    <el-switch v-model="enableSuggestions" active-color="#409eff"></el-switch>
+                </div>
                 <div class="user-profile">
                     <svg class="icon">
                         <use xlink:href="#icon-user"></use>
@@ -280,44 +285,58 @@
 
                                     <!-- 数据表格 (如果有 SQL 结果) -->
                                     <!-- 数据结果按钮 -->
-                                    <div class="data-result-btn" v-if="msg.sqlResult && msg.sqlResult.length > 0"
-                                        style="margin-top: 10px;">
-                                        <el-button type="success" plain size="small" @click="showData(msg.sqlResult)">
+                                    <!-- 动作按钮栏 -->
+                                    <div class="action-bar"
+                                        v-if="msg.sql || (msg.sqlResult && msg.sqlResult.length > 0)">
+                                        <button class="action-btn" v-if="msg.sql" @click="showSql(msg.sql)">
+                                            <svg class="icon" style="margin-right:4px">
+                                                <use xlink:href="#icon-code"></use>
+                                            </svg>
+                                            查看SQL
+                                        </button>
+
+                                        <button class="action-btn" v-if="msg.sqlResult && msg.sqlResult.length > 0"
+                                            @click="showData(msg.sqlResult)">
                                             <svg class="icon" style="margin-right:4px">
                                                 <use xlink:href="#icon-table"></use>
                                             </svg>
-                                            查看查询数据 ({{ msg.sqlResult.length }} 条)
-                                        </el-button>
+                                            查看数据 ({{ msg.sqlResult.length }})
+                                        </button>
+
+                                        <button class="action-btn" v-if="msg.chartSpec"
+                                            @click="viewChart(msg.chartSpec, msg.chartReasoning)">
+                                            <svg class="icon" style="margin-right:4px">
+                                                <use xlink:href="#icon-chart"></use>
+                                            </svg>
+                                            查看图表
+                                        </button>
+
+                                        <button class="action-btn primary"
+                                            v-else-if="msg.sqlResult && msg.sqlResult.length > 0"
+                                            @click="generateChart(msg, index)" :disabled="msg.isChartLoading">
+                                            <svg class="icon" :class="{'is-loading': msg.isChartLoading}"
+                                                style="margin-right:4px">
+                                                <use xlink:href="#icon-chart"></use>
+                                            </svg>
+                                            {{ msg.isChartLoading ? '生成中...' : '生成图表' }}
+                                        </button>
                                     </div>
 
-                                    <!-- SQL 代码 (折叠) -->
-                                    <div class="sql-code" v-if="msg.sql">
-                                        <el-collapse>
-                                            <el-collapse-item name="2">
-                                                <template #title>
-                                                    <div style="display:flex;align-items:center;gap:6px;">
-                                                        <svg class="icon">
-                                                            <use xlink:href="#icon-code"></use>
-                                                        </svg>
-                                                        <span>查看 SQL</span>
-                                                    </div>
-                                                </template>
-                                                <pre>{{ msg.sql }}</pre>
-                                            </el-collapse-item>
-                                        </el-collapse>
-                                    </div>
+
 
                                     <!-- 相关推荐问题 -->
-                                    <div class="suggested-questions" v-if="index === messages.length - 1">
+                                    <div class="suggested-questions"
+                                        v-if="index === messages.length - 1 && suggestedQuestions && suggestedQuestions.length > 0">
                                         <div class="suggest-title">
                                             <svg class="icon">
                                                 <use xlink:href="#icon-recommend"></use>
                                             </svg>
-                                            推荐问题
+                                            为您推荐
                                         </div>
                                         <div class="question-chips">
-                                            <el-tag v-for="q in suggestedQuestions" :key="q" type="info" effect="plain"
-                                                class="question-tag" @click="sendMessage(q)">
+                                            <el-tag v-for="q in suggestedQuestions" :key="q" type="primary"
+                                                effect="light" class="question-tag" @click="sendMessage(q)"
+                                                style="cursor: pointer; margin-right: 8px; margin-bottom: 8px;">
                                                 {{ q }}
                                             </el-tag>
                                         </div>
@@ -364,19 +383,39 @@
         </div>
 
         <!-- 数据展示弹窗 -->
-        <el-dialog v-model="dialogVisible" title="查询数据详情" width="80%">
+        <el-dialog v-model="dialogVisible" title="查询数据详情" width="75%" align-center>
             <el-table :data="tableData" border stripe style="width: 100%" height="500">
                 <el-table-column v-for="(val, key) in (tableData.length > 0 ? tableData[0] : {})" :key="key" :prop="key"
                     :label="key" min-width="120" show-overflow-tooltip>
                 </el-table-column>
             </el-table>
         </el-dialog>
+
+        <!-- SQL 展示弹窗 -->
+        <el-dialog v-model="sqlDialogVisible" title="生成的 SQL 语句" width="75%" align-center>
+            <div class="sql-code">
+                <pre>{{ currentSql }}</pre>
+            </div>
+        </el-dialog>
+
+        <!-- 图表展示弹窗 -->
+        <el-dialog v-model="chartDialogVisible" title="相关数据图表" width="75%" align-center class="chart-dialog">
+            <div id="dialog-chart-container" style="width: 100%; height: 60vh;"></div>
+            <div class="chart-reasoning" v-if="currentChartReasoning" style="margin-top: 16px;">
+                <div style="font-weight: 500; margin-bottom: 6px;">图表解读：</div>
+                {{ currentChartReasoning }}
+            </div>
+        </el-dialog>
     </div>
 
     <!-- 引入 Vue 3 和 Element Plus JS -->
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> <!-- 脚本 -->
+    <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
     <script src="/ui/script.js?v=8"></script>
 </body>
 

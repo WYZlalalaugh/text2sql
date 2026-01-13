@@ -40,6 +40,21 @@ def create_intent_classifier(llm_client, prompt_builder):
             }
 
         
+        # 提取历史对话用于重写 (方案 A)
+        messages = state.get("messages", [])
+        history_text = "无"
+        if len(messages) > 1:
+            # 这里的 messages 包含了当前的 HumanMessage（最后一个）
+            # 我们提取之前的对话作为上下文
+            recent_messages = messages[:-1][-6:]  # 取最近3轮完整对话
+            history_lines = []
+            for m in recent_messages:
+                # 处理不同格式的消息对象
+                role = "User" if m.type == "human" else "Assistant"
+                content = m.content
+                history_lines.append(f"{role}: {content}")
+            history_text = "\n".join(history_lines)
+        
         # 加载全量指标体系 (不再使用 matched_metrics)
         full_metrics_text = ""
         metrics_path = config.paths.metrics_path
@@ -51,9 +66,10 @@ def create_intent_classifier(llm_client, prompt_builder):
                 except:
                     pass
         
-        # 使用 PromptBuilder 构建提示词
+        # 使用 PromptBuilder 构建提示词 (注入历史)
         prompt = prompt_builder.build_intent_classification_prompt(
             query=user_query,
+            chat_history=history_text,
             full_metrics_context=full_metrics_text
         )
         
@@ -80,29 +96,33 @@ def create_intent_classifier(llm_client, prompt_builder):
             # 转换意图类型
             intent_type_str = result.get("intent_type", "chitchat")
             intent_type_map = {
-                "value_query": IntentType.VALUE_QUERY,      # 新增
-                "simple_query": IntentType.VALUE_QUERY,     # 兼容旧名称
+                "value_query": IntentType.VALUE_QUERY,
                 "metric_query": IntentType.METRIC_QUERY,
                 "metric_definition": IntentType.METRIC_DEFINITION,
                 "chitchat": IntentType.CHITCHAT
             }
             intent_type = intent_type_map.get(intent_type_str, IntentType.CHITCHAT)
             
+            # 使用改写后的意图重新赋值 user_query (方案 A: 直接覆盖)
+            # 这样下游节点可以直接消费最清晰的 Query，无需感知多轮逻辑
+            final_query = result.get("refined_intent", user_query)
+            
             return {
                 "intent_type": intent_type,
                 "intent_analysis": result.get("analysis", ""),
+                "user_query": final_query,               # 正式覆盖原始 user_query
                 "correction_count": 0,                   # 初始化计数器
                 "current_node": "intent_classifier"
             }
-
             
         except json.JSONDecodeError:
             return {
                 "intent_type": IntentType.CHITCHAT,
                 "intent_analysis": "无法解析 LLM 响应",
-                "correction_count": 0,                   # 初始化计数器
+                "correction_count": 0,
                 "current_node": "intent_classifier"
             }
+
 
     
     return intent_classifier_node

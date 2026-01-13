@@ -1,9 +1,10 @@
 """
 Text2SQL 智能体状态定义
 """
-from typing import TypedDict, List, Optional, Dict, Any, Literal
+from typing import TypedDict, List, Optional, Dict, Any, Literal, Annotated
 from dataclasses import dataclass
 from enum import Enum
+from langgraph.graph.message import add_messages
 
 
 class IntentType(str, Enum):
@@ -39,8 +40,8 @@ class MetricInfo:
 class AgentState(TypedDict, total=False):
     """LangGraph Agent 状态定义"""
     
-    # 对话历史
-    messages: List[Dict[str, str]]
+    # 对话历史 (关键修改：自动追加模式)
+    messages: Annotated[List[Any], add_messages]
     
     # 原始用户查询
     user_query: str
@@ -103,4 +104,10 @@ class AgentState(TypedDict, total=False):
     # ReAct / 反思相关
     sql_reflection: Optional[str]     # SQL 执行后的反思思考过程
     execution_observation: Optional[str] # 格式化后的执行观测结果
+    
+    # 推荐问题相关
+    suggested_questions: List[str]    # AI 推荐的后续问题
+    
+    # 逻辑开关相关
+    enable_suggestions: bool          # 是否开启智能推荐
 

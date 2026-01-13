@@ -1,4 +1,5 @@
 const { createApp, ref, reactive, nextTick, onMounted } = Vue;
+const { ElMessage } = ElementPlus;
 
 const app = createApp({
     setup() {
@@ -9,6 +10,7 @@ const app = createApp({
         const chatWrapper = ref(null);
         let sessionId = 'session_' + Date.now();
         const currentThreadTitle = ref('');
+        const enableSuggestions = ref(false); // 默认关闭开关
 
         // 当前回答的步骤（用于流式显示）
         const currentSteps = ref([]);
@@ -16,6 +18,15 @@ const app = createApp({
         // 数据展示弹窗
         const dialogVisible = ref(false);
         const tableData = ref([]);
+
+        // SQL 展示弹窗
+        const sqlDialogVisible = ref(false);
+        const currentSql = ref('');
+
+        // 图表展示弹窗
+        const chartDialogVisible = ref(false);
+        const currentChartSpec = ref(null);
+        const currentChartReasoning = ref('');
 
         // 打字机效果处理函数
         const typeWriter = (obj, key, text, speed = 15) => {
@@ -43,12 +54,48 @@ const app = createApp({
             dialogVisible.value = true;
         };
 
-        // 推荐问题
-        const suggestedQuestions = ref([
-            '查询湖北省不同地市的学校数量',
-            '对比2023年各类型学校的教师数',
-            '分析数字素养指标得分情况'
-        ]);
+        const showSql = (sql) => {
+            currentSql.value = sql;
+            sqlDialogVisible.value = true;
+        };
+
+        const viewChart = (spec, reasoning) => {
+            currentChartSpec.value = spec;
+            currentChartReasoning.value = reasoning;
+            chartDialogVisible.value = true;
+
+            // 使用 setTimeout 确保 Dialog DOM 已渲染
+            setTimeout(() => {
+                try {
+                    // 关键修复：移除 Vue 的响应式代理，传递纯 JSON 对象给 Vega
+                    const rawSpec = JSON.parse(JSON.stringify(spec));
+
+                    // 强制让图表充满容器
+                    rawSpec.width = "container";
+                    rawSpec.height = "container";
+                    rawSpec.autosize = { type: "fit", contains: "padding" };
+
+                    // 确保容器存在
+                    const container = document.querySelector('#dialog-chart-container');
+                    if (container) {
+                        vegaEmbed('#dialog-chart-container', rawSpec, {
+                            actions: false,
+                            renderer: 'svg'
+                        }).catch(e => {
+                            console.error('Vega Embed Error:', e);
+                            ElMessage.error('图表渲染出错');
+                        });
+                    } else {
+                        console.error('Chart container not found');
+                    }
+                } catch (e) {
+                    console.error('Chart view error:', e);
+                }
+            }, 100);
+        };
+
+        // 推荐问题（动态获取）
+        const suggestedQuestions = ref([]);
 
         // 格式化 Markdown
         const formatMarkdown = (text) => {
@@ -90,7 +137,8 @@ const app = createApp({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: content,
-                        session_id: sessionId
+                        session_id: sessionId,
+                        enable_suggestions: enableSuggestions.value // 传入开关状态
                     })
                 });
 
@@ -179,6 +227,11 @@ const app = createApp({
                                         tempMessage.sqlResult = event.data;
                                     }
 
+                                    // 如果有推荐问题，更新全局推荐列表
+                                    if (event.suggested_questions) {
+                                        suggestedQuestions.value = event.suggested_questions;
+                                    }
+
                                     tempMessage.isStreaming = false;
                                 } else if (event.type === 'error') {
                                     // 错误
@@ -228,6 +281,41 @@ const app = createApp({
             });
         };
 
+        // 生成图表
+        const generateChart = async (msg, index) => {
+            if (msg.isChartLoading) return;
+            msg.isChartLoading = true;
+
+            try {
+                const response = await fetch('/api/chart', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.chart_spec) {
+                    msg.chartSpec = result.chart_spec;
+                    msg.chartReasoning = result.chart_reasoning;
+
+                    // 自动打开图表弹窗
+                    viewChart(msg.chartSpec, msg.chartReasoning);
+                    scrollToBottom();
+                } else {
+                    ElMessage.warning(result.reasoning || '无法生成相关图表');
+                }
+
+            } catch (e) {
+                console.error('生成图表失败', e);
+                ElMessage.error('生成图表失败: ' + e.message);
+            } finally {
+                msg.isChartLoading = false;
+            }
+        };
+
         return {
             messages,
             inputMessage,
@@ -242,7 +330,16 @@ const app = createApp({
             formatMarkdown,
             dialogVisible,
             tableData,
-            showData
+            showData,
+            sqlDialogVisible,
+            currentSql,
+            showSql,
+            chartDialogVisible,
+            currentChartSpec,
+            currentChartReasoning,
+            viewChart,
+            enableSuggestions,
+            generateChart
         };
     }
 });

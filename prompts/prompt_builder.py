@@ -114,6 +114,7 @@ class PromptBuilder:
     def build_intent_classification_prompt(
         self,
         query: str,
+        chat_history: str = "无",
         matched_metrics: list = None,
         full_metrics_context: str = None,
     ) -> str:
@@ -141,6 +142,7 @@ class PromptBuilder:
             domain_description=domain_description,
             metric_definitions=metric_definitions,
             matched_metrics=metrics_text,
+            chat_history=chat_history,
             user_query=query
         )
     

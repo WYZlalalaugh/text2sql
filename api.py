@@ -42,6 +42,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default"
+    enable_suggestions: bool = False  # 新增推荐开关
 
 
 class ChatResponse(BaseModel):
@@ -67,6 +68,7 @@ def get_or_create_session(session_id: str):
         )
         
         sessions[session_id] = {
+            "session_id": session_id,
             "graph": graph,
             "state": None,
             "waiting_for_clarification": False
@@ -111,8 +113,12 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
         # 初始化累积状态，确保不丢失初始信息
         accumulated_state = initial_state.copy()
         
-        # 配置递归限制
-        config = {"recursion_limit": 50}
+        # 配置递归限制和会话 ID
+        thread_id = session.get("session_id", "default_thread")
+        config = {
+            "recursion_limit": 50,
+            "configurable": {"thread_id": thread_id}
+        }
         
         for event in graph.stream(initial_state, config=config):
             # event 是 {node_name: node_output} 的字典
@@ -174,7 +180,7 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
 
 
                     
-                    yield f"data: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
                     current_step += 1
                     await asyncio.sleep(0.1)
         
@@ -193,7 +199,8 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                 'need_clarification': need_clarification,
                 'intent_type': str(final_state.get("intent_type", "")),
                 'sql_reflection': final_state.get("sql_reflection"), # 新增反思字段
-                'data': final_state.get("execution_result")  # 修正字段名
+                'data': final_state.get("execution_result"),  # 修正字段名
+                'suggested_questions': final_state.get("suggested_questions", []) # 推荐问题
 
             }
             yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
@@ -231,6 +238,7 @@ async def chat_stream(request: ChatRequest):
                 {"role": "user", "content": request.message}
             ],
             "clarification_count": previous_state.get("clarification_count", 0),
+            "enable_suggestions": request.enable_suggestions # 传入推荐开关
             # "refined_intent": request.message, 
         }
         
@@ -246,7 +254,11 @@ async def chat_stream(request: ChatRequest):
                 # 初始化累积状态
                 accumulated_state = new_state.copy()
                 
-                config_dict = {"recursion_limit": 50}
+                thread_id = session.get("session_id", "default_thread")
+                config_dict = {
+                    "recursion_limit": 50,
+                    "configurable": {"thread_id": thread_id}
+                }
                 
                 for event in graph.stream(new_state, config=config_dict):
                     for node_name, node_output in event.items():
@@ -298,8 +310,9 @@ async def chat_stream(request: ChatRequest):
         # 新查询
         initial_state: AgentState = {
             "user_query": request.message,
-            "messages": [],
-            "clarification_count": 0
+            "messages": [("user", request.message)],  # add_messages 会自动处理
+            "clarification_count": 0,
+            "enable_suggestions": request.enable_suggestions # 传入开关值
         }
         
         return StreamingResponse(
@@ -348,7 +361,46 @@ async def chat(request: ChatRequest):
     except Exception as e:
         import traceback
         print(f"非流式执行错误: {traceback.format_exc()}")
+    except Exception as e:
+        import traceback
+        print(f"非流式执行错误: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ChartRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/api/chart")
+async def generate_chart(request: ChartRequest):
+    """生成图表接口"""
+    try:
+        session = get_or_create_session(request.session_id)
+        
+        # 检查是否有状态
+        if not session.get("state"):
+            return {"chart_spec": None, "reasoning": "没有可用的查询结果"}
+            
+        state = session["state"]
+        
+        # 检查是否有执行结果
+        if not state.get("execution_result"):
+            return {"chart_spec": None, "reasoning": "查询未返回数据，无法生成图表"}
+            
+        # 动态导入防止循环依赖
+        from agents.chart_generator import create_chart_generator
+        chart_gen = create_chart_generator()
+        
+        # 调用生成器
+        result = chart_gen(state)
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        print(f"图表生成错误: {traceback.format_exc()}")
+        return {"chart_spec": None, "reasoning": f"生成失败: {str(e)}"}
+
 
 
 @app.post("/api/reset")

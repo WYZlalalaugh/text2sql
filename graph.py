@@ -3,6 +3,7 @@ LangGraph 图编排 - 定义智能体工作流
 """
 from typing import Literal, Dict, Any
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 
 from state import AgentState, IntentType
 from vector_store import get_vector_store
@@ -14,6 +15,7 @@ from agents.sql_generator import create_sql_generator
 from agents.sql_executor import create_sql_executor
 from agents.sql_corrector import create_sql_corrector
 from agents.response_generator import create_response_generator
+from agents.question_suggester import create_question_suggester
 from prompts.sql_rules import DatabaseType
 
 
@@ -53,6 +55,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     sql_executor = create_sql_executor(db_connection)
     sql_corrector = create_sql_corrector(llm_client, database_type)
     response_generator = create_response_generator(llm_client)
+    question_suggester = create_question_suggester(llm_client)
     
     # 定义向量检索节点
     def vector_search_node(state: AgentState) -> Dict[str, Any]:
@@ -84,12 +87,14 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     # workflow.add_node("vector_search", vector_search_node)
     workflow.add_node("intent_classifier", intent_classifier)
     workflow.add_node("ambiguity_checker", ambiguity_checker)
-    workflow.add_node("query_planner", query_planner)  # 新增
+    workflow.add_node("query_planner", query_planner)
     workflow.add_node("clarification_return", clarification_return_node)
     workflow.add_node("context_assembler", context_assembler)
     workflow.add_node("sql_generator", sql_generator)
     workflow.add_node("sql_executor", sql_executor)
+    workflow.add_node("sql_corrector", sql_corrector)
     workflow.add_node("response_generator", response_generator)
+    workflow.add_node("question_suggester", question_suggester)
     
     # 设置入口点 - 直接进入意图分类，跳过向量检索
     workflow.set_entry_point("intent_classifier")
@@ -170,8 +175,6 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
 
 
     
-    workflow.add_node("sql_corrector", sql_corrector)
-    
     workflow.add_conditional_edges(
         "sql_executor",
         route_after_sql_execution,
@@ -182,15 +185,35 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     )
     
     # 纠错后重新执行 SQL
+    def increment_correction_count(state: AgentState) -> Dict[str, Any]:
+        return {"correction_count": state.get("correction_count", 0) + 1}
+    
     workflow.add_edge("sql_corrector", "sql_executor")
     
-    # 结束节点
-    workflow.add_edge("response_generator", END)
-    workflow.add_edge("clarification_return", END)
+    # 响应生成后的路由开关 (推荐问题开关)
+    def route_after_response(state: AgentState) -> str:
+        """根据配置决定是否生成推荐问题"""
+        enable = state.get("enable_suggestions", False)
+        print(f"DEBUG: route_after_response - enable_suggestions: {enable}")
+        if enable:
+            return "question_suggester"
+        return "end"
 
+    workflow.add_conditional_edges(
+        "response_generator",
+        route_after_response,
+        {
+            "question_suggester": "question_suggester",
+            "end": END
+        }
+    )
     
-    # 编译
-    app = workflow.compile()
+    workflow.add_edge("question_suggester", END)
+    workflow.add_edge("clarification_return", END)
+    
+    # 编译（增加 Checkpointer 支持多轮对话记忆）
+    memory = MemorySaver()
+    app = workflow.compile(checkpointer=memory)
     
     return app
 

@@ -54,13 +54,19 @@ def create_ambiguity_checker(llm_client, prompt_builder):
             }
         
         # 格式化对话历史
+        history_text = "无"
         if messages:
-            history_text = "\n".join([
-                f"{m.get('role', 'user')}: {m.get('content', '')}"
-                for m in messages[-4:]  # 只取最近 4 条
-            ])
-        else:
-            history_text = "无"
+            history_lines = []
+            for m in messages[-4:]:  # 只取最近 4 条
+                # 处理不同格式的消息对象 (LangChain Message 或 Dict)
+                if hasattr(m, 'type'):
+                    role = "User" if m.type == "human" else "Assistant"
+                    content = m.content
+                else:
+                    role = m.get('role', 'user').capitalize()
+                    content = m.get('content', '')
+                history_lines.append(f"{role}: {content}")
+            history_text = "\n".join(history_lines)
         
         # 使用 PromptBuilder 构建提示词
         prompt = prompt_builder.build_ambiguity_check_prompt(

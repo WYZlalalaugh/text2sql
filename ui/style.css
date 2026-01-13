@@ -294,16 +294,59 @@ body {
 }
 
 .avatar {
-    width: 36px;
-    height: 36px;
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: #f0f2f5;
+}
+
+.action-btn {
+    border-radius: 8px !important;
+    padding: 8px 16px !important;
+    font-weight: 500;
+    transition: all 0.2s;
+    border: 1px solid #dcdfe6;
+    background: #fff;
     color: var(--text-regular);
-    flex-shrink: 0;
-    font-size: 20px;
+}
+
+.action-btn:hover {
+    color: var(--primary-color);
+    border-color: #c6e2ff;
+    background-color: #ecf5ff;
+}
+
+.action-btn.primary {
+    color: var(--white);
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.action-btn.primary:hover {
+    background-color: #66b1ff;
+    border-color: #66b1ff;
+    box-shadow: 0 4px 12px rgba(64, 158, 255, 0.3);
+}
+
+/* 图表容器优化 */
+.chart-wrapper {
+    margin-top: 20px;
+    background: #fff;
+    border: 1px solid #ebeef5;
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+}
+
+.chart-reasoning {
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--text-regular);
+    background: #f8fafc;
+    padding: 12px 16px;
+    border-radius: 8px;
+    line-height: 1.6;
+    border-left: 3px solid var(--primary-color);
 }
 
 .message-item.user .avatar {
@@ -531,4 +574,31 @@ body {
     40% {
         transform: scale(1);
     }
+}
+
+/* 浮窗样式优化 */
+.el-dialog__body {
+    padding: 24px !important;
+    font-size: 30px;
+    /* 默认增加字体大小 */
+}
+
+/* 浮窗中的图表解读 */
+.el-dialog__body .chart-reasoning {
+    font-size: 16px !important;
+    /* 强制覆盖之前的 13px */
+    line-height: 1.8;
+    padding: 16px;
+    background-color: #f8f9fa;
+    border-left: 4px solid var(--primary-color);
+    margin-top: 24px !important;
+}
+
+/* 浮窗中的 SQL 代码 */
+.el-dialog__body .sql-code pre {
+    font-size: 16px !important;
+    padding: 16px;
+    background-color: #f8f9fa;
+    border: 1px solid #ebeef5;
+    font-family: 'Fira Code', monospace;
 }

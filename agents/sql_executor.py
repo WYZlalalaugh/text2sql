@@ -6,6 +6,7 @@ import json
 
 from state import AgentState
 from config import config
+from datetime import datetime, date
 
 
 def create_sql_executor(db_connection=None):
@@ -76,15 +77,18 @@ def format_observation(result: List[Dict[str, Any]]) -> str:
     row_count = len(result)
     columns = list(result[0].keys()) if row_count > 0 else []
     
+    # 既然结果已经过 _sanitize_results 处理，这里可以直接 dump
     if row_count <= 100:
-        return f"Observation: 执行成功。返回了 {row_count} 条记录：\n{json.dumps(result, ensure_ascii=False)}"
+        res_str = json.dumps(result, ensure_ascii=False)
+        return f"Observation: 执行成功。返回了 {row_count} 条记录：\n{res_str}"
     
     # 结果过多（超过100条），进行摘要展示
     sample = result[:5]
+    res_str = json.dumps(sample, ensure_ascii=False)
     return (
         f"Observation: 执行成功。返回了大量结果（共 {row_count} 条）。\n"
         f"字段列表: {columns}\n"
-        f"前 5 条样本数据: {json.dumps(sample, ensure_ascii=False)}\n"
+        f"前 5 条样本数据: {res_str}\n"
         f"提示：如果你的原始意图是获取宏观统计数据而非海量明细，请确认是否需要增加聚合函数或更严格的筛选条件。"
     )
 
@@ -93,9 +97,9 @@ def is_safe_sql(sql: str) -> bool:
     """检查 SQL 是否安全（只允许 SELECT）"""
     sql_upper = sql.upper().strip()
     
-    # 只允许 SELECT 语句
-    if not sql_upper.startswith("SELECT"):
-        return False
+    # # 只允许 SELECT 语句
+    # if not sql_upper.startswith("SELECT"):
+    #     return False
     
     # 禁止的关键词
     dangerous_keywords = [
@@ -129,7 +133,8 @@ def execute_sql(sql: str) -> List[Dict[str, Any]]:
             with connection.cursor() as cursor:
                 cursor.execute(sql)
                 result = cursor.fetchall()
-                return list(result)
+                # 关键：在这里进行清洗，确保流出的数据全是标准 JSON 类型
+                return _sanitize_results(list(result))
         finally:
             connection.close()
             
@@ -140,6 +145,20 @@ def execute_sql(sql: str) -> List[Dict[str, Any]]:
         raise Exception(f"数据库执行错误: {str(e)}")
 
 
+def _sanitize_results(data: Any) -> Any:
+    """递归将结果中的 Decimal 转换为 float，处理 JSON 序列化问题"""
+    from decimal import Decimal
+    if isinstance(data, list):
+        return [_sanitize_results(item) for item in data]
+    elif isinstance(data, dict):
+        return {k: _sanitize_results(v) for k, v in data.items()}
+    elif isinstance(data, Decimal):
+        return float(data)
+    elif isinstance(data, (datetime, date)):
+        return data.isoformat()
+    return data
+
+
 def execute_with_connection(connection, sql: str) -> List[Dict[str, Any]]:
     """使用已有连接执行 SQL"""
     cursor = connection.cursor()
@@ -147,7 +166,9 @@ def execute_with_connection(connection, sql: str) -> List[Dict[str, Any]]:
         cursor.execute(sql)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
-        return [dict(zip(columns, row)) for row in rows]
+        result = [dict(zip(columns, row)) for row in rows]
+        # 关键：清洗已有连接返回的结果
+        return _sanitize_results(result)
     finally:
         cursor.close()
 

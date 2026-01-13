@@ -75,6 +75,7 @@ def generate_chitchat_response(state: AgentState, llm_client) -> Dict[str, Any]:
     
     return {
         "final_response": reply,
+        "messages": [("assistant", reply)],
         "current_node": "response_generator"
     }
 
@@ -112,10 +113,11 @@ def generate_definition_response(state: AgentState, llm_client) -> Dict[str, Any
         reply = response.content if hasattr(response, 'content') else str(response)
     else:
         # Fallback 到简单的关键词匹配（如果没有 LLM 或加载失败）
-        reply = "抱歉，暂时无法查询指标定义信息。"
+        reply = "抱歉，暂时无法查询指标 definition 信息。"
     
     return {
         "final_response": reply,
+        "messages": [("assistant", reply)],
         "current_node": "response_generator"
     }
 
@@ -134,6 +136,7 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
             reply += f"生成的 SQL：\n```sql\n{generated_sql}\n```"
         return {
             "final_response": reply,
+            "messages": [("assistant", reply)],
             "current_node": "response_generator"
         }
     
@@ -147,6 +150,7 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
             reply += f"\n执行的 SQL：\n```sql\n{generated_sql}\n```"
         return {
             "final_response": reply,
+            "messages": [("assistant", reply)],
             "current_node": "response_generator" 
         }
     
@@ -176,6 +180,7 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
     
     return {
         "final_response": reply,
+        "messages": [("assistant", reply)],
         "current_node": "response_generator"
     }
 
