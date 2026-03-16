@@ -110,4 +110,30 @@ class AgentState(TypedDict, total=False):
     
     # 逻辑开关相关
     enable_suggestions: bool          # 是否开启智能推荐
+    
+    # ============ 指标查询专用字段 (Metric Query Flow) ============
+    # [已废弃] 数据文件路径 - Code-Based 模式不再使用 CSV
+    # 保留以兼容 VALUE_QUERY 的 sql_executor 流式模式
+    data_file_path: Optional[str]     # 如 "temp/query_xxx.csv"
+    
+    # 数据库 Schema 上下文 (供 Data Analyzer 生成 SQL)
+    schema_context: Optional[str]     # 从 context_assembler 获取的 Schema 字符串
+    
+    # 数据分析智能体相关
+    analysis_code: Optional[str]      # LLM 生成的 Python 分析代码
+    analysis_result: Optional[Any]    # Python 代码执行的最终结果 (仅存聚合值)
+    analysis_error: Optional[str]     # Python 执行时的错误信息
+    
+    # 验证智能体相关
+    verification_feedback: Optional[str]  # 验证智能体的反馈/建议
+    verification_passed: Optional[bool]   # 验证是否通过
+    verification_count: int               # 验证/纠错循环次数
+    max_verification_attempts: int        # 最大验证尝试次数 (默认 2)
+    
+    # ============ RL 训练相关字段 (可选) ============
+    # 标准答案 (仅在训练/评估模式下使用)
+    ground_truth: Optional[Any]       # 用于对比验证的正确答案
+    
+    # 轨迹 ID (用于 RL 日志关联)
+    trajectory_id: Optional[str]      # 唯一标识本次推理轨迹
 

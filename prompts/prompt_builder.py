@@ -183,3 +183,7 @@ class PromptBuilder:
             conversation_history=conversation_history or "无",
             filter_conditions_guidance=DEFAULT_FILTER_CONDITIONS_GUIDANCE
         )
+    
+    # [已废弃] build_simple_sql_prompt() - Code-Based 模式下 METRIC_QUERY 
+    # 直接使用 data_analyzer_prompt.py，不再需要此方法
+

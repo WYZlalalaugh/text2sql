@@ -116,9 +116,13 @@ def create_context_assembler(prompt_builder: PromptBuilder = None):
         上下文组装节点
         
         接收 Query Planner 的输出，构建精简的 Prompt
+        根据意图类型选择不同的 Prompt 构建策略:
+        - METRIC_QUERY: 使用简单 SQL Prompt (只拉取数据, 不做复杂计算)
+        - 其他: 使用原有的 SQL 生成 Prompt
         """
         user_query = state.get("user_query", "")
         refined_intent = state.get("refined_intent") or user_query
+        intent_type = state.get("intent_type")
         
         # 获取 Query Planner 的输出
         query_plan = state.get("query_plan", {})
@@ -129,49 +133,66 @@ def create_context_assembler(prompt_builder: PromptBuilder = None):
         schema = load_schema()
         full_metrics = load_full_metrics()
         
-        # 根据选择的指标进行上下文剪枝
-        if selected_metrics:
-            filtered_metrics_text = filter_metrics_by_selection(full_metrics, selected_metrics)
-        else:
-            # 没有选择指标（可能是简单数值查询），不注入指标上下文，避免干扰
-            filtered_metrics_text = ""
-        
         # 获取域配置和 PromptBuilder
         domain = get_domain_config()
         builder = prompt_builder or PromptBuilder(domain=domain)
         
-        # 提取用户指令
-        instructions = extract_user_instructions(state)
+        # 判断是否为指标查询
+        is_metric_query = (intent_type == IntentType.METRIC_QUERY or 
+                          intent_type == "metric_query")
         
-        # 添加 Query Plan 中的信息作为额外指令
-        if query_plan:
-            calc_type = query_plan.get("calculation_type", "")
-            filters = query_plan.get("filters", {})
-            group_by = query_plan.get("group_by", [])
+        # 准备 schema_context (供 Data Analyzer 使用)
+        schema_context = json.dumps(schema, ensure_ascii=False, indent=2)
+        
+        if is_metric_query:
+            # 指标查询 (Code-Based 模式): 
+            # 直接进入 data_analyzer，不需要生成 SQL prompt
+            # data_analyzer 会使用 schema_context 和 query_plan 生成完整代码
+            return {
+                "assembled_prompt": "",  # Code-Based 模式不使用此字段
+                "schema_context": schema_context,
+                "current_node": "context_assembler"
+            }
+        else:
+            # 非指标查询 (VALUE_QUERY): 使用原有的完整 SQL 生成 Prompt
+            # 根据选择的指标进行上下文剪枝
+            if selected_metrics:
+                filtered_metrics_text = filter_metrics_by_selection(full_metrics, selected_metrics)
+            else:
+                filtered_metrics_text = ""
             
-            if calc_type:
-                instructions.append(f"计算类型: {calc_type}")
-            if filters:
-                filter_str = ", ".join([f"{k}={v}" for k, v in filters.items() if v])
-                if filter_str:
-                    instructions.append(f"筛选条件: {filter_str}")
-            if group_by:
-                instructions.append(f"分组字段: {', '.join(group_by)}")
-        
-        # 使用 PromptBuilder 构建 Prompt
-        assembled_prompt = builder.build_sql_generation_prompt(
-            query=refined_intent,
-            schema=schema,
-            matched_metrics=None,  # 不再使用旧的 matched_metrics
-            sql_samples=domain.sql_samples,
-            instructions=instructions if instructions else None,
-            reasoning_plan=reasoning_plan,
-            full_metrics_context=filtered_metrics_text  # 使用筛选后的指标
-        )
-        
-        return {
-            "assembled_prompt": assembled_prompt,
-            "current_node": "context_assembler"
-        }
+            # 提取用户指令
+            instructions = extract_user_instructions(state)
+            
+            # 添加 Query Plan 中的信息作为额外指令
+            if query_plan:
+                calc_type = query_plan.get("calculation_type", "")
+                filters = query_plan.get("filters", {})
+                group_by = query_plan.get("group_by", [])
+                
+                if calc_type:
+                    instructions.append(f"计算类型: {calc_type}")
+                if filters:
+                    filter_str = ", ".join([f"{k}={v}" for k, v in filters.items() if v])
+                    if filter_str:
+                        instructions.append(f"筛选条件: {filter_str}")
+                if group_by:
+                    instructions.append(f"分组字段: {', '.join(group_by)}")
+            
+            assembled_prompt = builder.build_sql_generation_prompt(
+                query=refined_intent,
+                schema=schema,
+                matched_metrics=None,
+                sql_samples=domain.sql_samples,
+                instructions=instructions if instructions else None,
+                reasoning_plan=reasoning_plan,
+                full_metrics_context=filtered_metrics_text
+            )
+            
+            return {
+                "assembled_prompt": assembled_prompt,
+                "schema_context": schema_context,
+                "current_node": "context_assembler"
+            }
     
     return context_assembler_node

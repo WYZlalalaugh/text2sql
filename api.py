@@ -38,6 +38,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 注: tools.db_client 会在首次调用 load_data 时自动从 config 读取数据库配置
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -87,6 +89,9 @@ NODE_DISPLAY_NAMES = {
     "sql_generator": "SQL生成",
     "sql_executor": "SQL执行",
     "sql_corrector": "SQL纠错",
+    "data_analyzer": "代码生成",      # 新增
+    "python_executor": "代码执行",    # 新增
+    "verifier": "结果验证",           # 新增
     "response_generator": "响应生成"
 }
 
@@ -114,7 +119,8 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
         accumulated_state = initial_state.copy()
         
         # 配置递归限制和会话 ID
-        thread_id = session.get("session_id", "default_thread")
+        # 使用动态生成的 thread_id，避免 checkpointer 恢复旧状态
+        thread_id = session.get("current_thread_id") or session.get("session_id", "default_thread")
         config = {
             "recursion_limit": 50,
             "configurable": {"thread_id": thread_id}
@@ -177,7 +183,35 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                             step_data['reflection'] = node_output.get('sql_reflection', '')
                         if "generated_sql" in node_output:
                             step_data['sql'] = node_output.get('generated_sql', '')
-
+                    
+                    # 新增: 处理 Code-Based 模式的节点
+                    elif node_name == "data_analyzer":
+                        if "analysis_code" in node_output and node_output.get("analysis_code"):
+                            code_preview = node_output.get("analysis_code", "")[:100]
+                            step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
+                        elif "analysis_error" in node_output:
+                            step_data['detail'] = "代码生成遇到问题"
+                        else:
+                            step_data['detail'] = "正在生成分析代码..."
+                    
+                    elif node_name == "python_executor":
+                        if "analysis_result" in node_output and node_output.get("analysis_result"):
+                            result = node_output.get("analysis_result")
+                            if isinstance(result, list):
+                                step_data['detail'] = f"代码执行成功，返回 {len(result)} 条结果"
+                            else:
+                                step_data['detail'] = "代码执行成功"
+                        elif "analysis_error" in node_output:
+                            step_data['detail'] = f"执行出错: {node_output.get('analysis_error', '')[:50]}..."
+                        else:
+                            step_data['detail'] = "正在执行分析代码..."
+                    
+                    elif node_name == "verifier":
+                        if node_output.get("verification_passed"):
+                            step_data['detail'] = "验证通过"
+                        else:
+                            feedback = node_output.get("verification_feedback", "")
+                            step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
 
                     
                     yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
@@ -192,16 +226,24 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
             need_clarification = final_state.get("ambiguity_detected", False)
             session["waiting_for_clarification"] = need_clarification
             
+            # 记录轨迹日志
+            asyncio.create_task(record_log(final_state))
+            
+            # 智能选择数据源: 优先使用 analysis_result (Code-Based), 其次 execution_result (SQL-Based)
+            final_data = final_state.get("analysis_result")
+            if not final_data:
+                final_data = final_state.get("execution_result")
+            
             result_data = {
                 'type': 'result',
                 'response': final_state.get("final_response", ""),
                 'sql': final_state.get("generated_sql"),
+                'python_code': final_state.get("analysis_code"), # 新增: 返回 Python 代码
                 'need_clarification': need_clarification,
                 'intent_type': str(final_state.get("intent_type", "")),
-                'sql_reflection': final_state.get("sql_reflection"), # 新增反思字段
-                'data': final_state.get("execution_result"),  # 修正字段名
-                'suggested_questions': final_state.get("suggested_questions", []) # 推荐问题
-
+                'sql_reflection': final_state.get("sql_reflection"), 
+                'data': final_data,  # 统一数据字段
+                'suggested_questions': final_state.get("suggested_questions", [])
             }
             yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
         
@@ -289,12 +331,23 @@ async def chat_stream(request: ChatRequest):
                     session["state"] = accumulated_state
                     final_state = accumulated_state # 兼容下方变量名
                     
+                    # 记录轨迹日志
+                    asyncio.create_task(record_log(final_state))
+                    
+                    # 智能选择数据源: 优先使用 analysis_result, 其次 execution_result
+                    final_data = final_state.get("analysis_result")
+                    if not final_data:
+                        final_data = final_state.get("execution_result")
+                    
                     result_data = {
                         'type': 'result',
                         'response': final_state.get("final_response", ""),
                         'sql': final_state.get("generated_sql"),
+                        'python_code': final_state.get("analysis_code"),  # 新增
                         'need_clarification': final_state.get("ambiguity_detected", False),
-                        'data': final_state.get("execution_result")  # 修正字段名
+                        'intent_type': str(final_state.get("intent_type", "")),
+                        'data': final_data,  # 修正: 统一数据字段
+                        'suggested_questions': final_state.get("suggested_questions", [])
                     }
                     yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
                 
@@ -307,18 +360,53 @@ async def chat_stream(request: ChatRequest):
         
         return StreamingResponse(clarification_stream(), media_type="text/event-stream")
     else:
-        # 新查询
+        # 新查询 - 重置会话状态，确保不继承上一轮的意图
+        session["state"] = None  # 清空旧状态
+        session["waiting_for_clarification"] = False
+        
+        # 生成新的 thread_id，确保 LangGraph 不从 checkpointer 恢复旧状态
+        import uuid
+        new_thread_id = f"query_{uuid.uuid4().hex[:8]}"
+        session["current_thread_id"] = new_thread_id
+        
         initial_state: AgentState = {
             "user_query": request.message,
-            "messages": [("user", request.message)],  # add_messages 会自动处理
+            "messages": [("user", request.message)],
             "clarification_count": 0,
-            "enable_suggestions": request.enable_suggestions # 传入开关值
+            "enable_suggestions": request.enable_suggestions
         }
         
         return StreamingResponse(
             stream_graph_execution(graph, initial_state, session),
             media_type="text/event-stream"
         )
+
+
+async def record_log(state: AgentState):
+    """异步记录轨迹日志"""
+    try:
+        from tools import log_trajectory, generate_trajectory_id
+        
+        # 确保有 ID
+        tid = state.get("trajectory_id")
+        if not tid:
+            tid = generate_trajectory_id()
+            
+        log_trajectory(
+            trajectory_id=tid,
+            user_query=state.get("user_query"),
+            query_plan=state.get("query_plan"),
+            analysis_code=state.get("analysis_code"),
+            analysis_result=state.get("analysis_result"),
+            analysis_error=state.get("analysis_error"),
+            verification_passed=state.get("verification_passed"),
+            verification_feedback=state.get("verification_feedback"),
+            ground_truth=None,  # 生产环境通常没有 GT
+            reward=None
+        )
+        # print(f"轨迹日志已记录: {tid}")
+    except Exception as e:
+        print(f"日志记录失败: {e}")
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -342,6 +430,9 @@ async def chat(request: ChatRequest):
             result = graph.invoke(initial_state, config=config)
         
         session["state"] = result
+        
+        # 记录日志
+        await record_log(result)
         
         need_clarification = result.get("ambiguity_detected", False)
         if need_clarification:
@@ -383,16 +474,27 @@ async def generate_chart(request: ChartRequest):
             
         state = session["state"]
         
-        # 检查是否有执行结果
-        if not state.get("execution_result"):
+        # 智能选择数据源: 优先 analysis_result, 其次 execution_result
+        chart_data = state.get("analysis_result") or state.get("execution_result")
+        
+        if not chart_data:
             return {"chart_spec": None, "reasoning": "查询未返回数据，无法生成图表"}
+        
+        # 限制传入图表生成器的数据量，避免超出上下文
+        MAX_CHART_RECORDS = 50
+        if isinstance(chart_data, list) and len(chart_data) > MAX_CHART_RECORDS:
+            chart_data = chart_data[:MAX_CHART_RECORDS]
+            
+        # 创建一个临时状态，包含截断后的数据
+        chart_state = state.copy()
+        chart_state["execution_result"] = chart_data  # chart_generator 使用 execution_result
             
         # 动态导入防止循环依赖
         from agents.chart_generator import create_chart_generator
         chart_gen = create_chart_generator()
         
         # 调用生成器
-        result = chart_gen(state)
+        result = chart_gen(chart_state)
         
         return result
         

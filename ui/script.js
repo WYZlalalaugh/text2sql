@@ -114,6 +114,27 @@ const app = createApp({
             }
         };
 
+        // 用于取消请求的控制器
+        let currentAbortController = null;
+
+        // 停止查询
+        const stopQuery = () => {
+            if (currentAbortController) {
+                currentAbortController.abort();
+                currentAbortController = null;
+            }
+            isLoading.value = false;
+
+            // 更新最后一条消息状态
+            if (messages.value.length > 0) {
+                const lastMsg = messages.value[messages.value.length - 1];
+                if (lastMsg.role === 'assistant' && lastMsg.isStreaming) {
+                    lastMsg.isStreaming = false;
+                    lastMsg.content = lastMsg.content || '查询已被用户中止';
+                }
+            }
+        };
+
         const sendMessage = async (content) => {
             if (!content.trim() || isLoading.value) return;
 
@@ -130,6 +151,9 @@ const app = createApp({
 
             scrollToBottom();
 
+            // 创建新的 AbortController
+            currentAbortController = new AbortController();
+
             try {
                 // 使用流式 API
                 const response = await fetch('/api/chat/stream', {
@@ -138,8 +162,9 @@ const app = createApp({
                     body: JSON.stringify({
                         message: content,
                         session_id: sessionId,
-                        enable_suggestions: enableSuggestions.value // 传入开关状态
-                    })
+                        enable_suggestions: enableSuggestions.value
+                    }),
+                    signal: currentAbortController.signal  // 添加取消信号
                 });
 
                 if (!response.ok) throw new Error('API 请求失败');
@@ -216,6 +241,10 @@ const app = createApp({
                                     if (event.sql) {
                                         tempMessage.sql = event.sql;
                                     }
+                                    if (event.python_code) {
+                                        // 新增: 处理 Python 代码
+                                        tempMessage.pythonCode = event.python_code;
+                                    }
                                     if (event.sql_reflection) {
                                         // 最终结果中如果还有反思，确保显示（通常步骤中已经流式显示了）
                                         if (!tempMessage.reflection) {
@@ -249,14 +278,30 @@ const app = createApp({
                 }
 
             } catch (error) {
-                // 移除临时消息并添加错误消息
-                messages.value.pop();
-                messages.value.push({
-                    role: 'assistant',
-                    content: '抱歉，系统出现错误：' + error.message
-                });
+                // 检查是否是用户主动中止
+                if (error.name === 'AbortError') {
+                    console.log('查询已被用户中止');
+                    // 更新最后一条消息
+                    if (messages.value.length > 0) {
+                        const lastMsg = messages.value[messages.value.length - 1];
+                        if (lastMsg.role === 'assistant') {
+                            lastMsg.isStreaming = false;
+                            if (!lastMsg.content) {
+                                lastMsg.content = '查询已被用户中止';
+                            }
+                        }
+                    }
+                } else {
+                    // 其他错误：移除临时消息并添加错误消息
+                    messages.value.pop();
+                    messages.value.push({
+                        role: 'assistant',
+                        content: '抱歉，系统出现错误：' + error.message
+                    });
+                }
             } finally {
                 isLoading.value = false;
+                currentAbortController = null;
                 scrollToBottom();
             }
         };
@@ -326,6 +371,7 @@ const app = createApp({
             handleSend,
             handleEnter,
             sendMessage,
+            stopQuery,  // 新增: 停止查询
             resetChat,
             formatMarkdown,
             dialogVisible,

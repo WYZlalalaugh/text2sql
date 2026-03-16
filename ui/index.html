@@ -74,6 +74,9 @@
                 <path
                     d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
             </symbol>
+            <symbol id="icon-stop" viewBox="0 0 24 24">
+                <path d="M6 6h12v12H6z" />
+            </symbol>
         </defs>
     </svg>
 
@@ -287,12 +290,23 @@
                                     <!-- 数据结果按钮 -->
                                     <!-- 动作按钮栏 -->
                                     <div class="action-bar"
-                                        v-if="msg.sql || (msg.sqlResult && msg.sqlResult.length > 0)">
+                                        v-if="msg.sql || msg.pythonCode || (msg.sqlResult && msg.sqlResult.length > 0)">
+
+                                        <!-- 显示 SQL 按钮 -->
                                         <button class="action-btn" v-if="msg.sql" @click="showSql(msg.sql)">
                                             <svg class="icon" style="margin-right:4px">
                                                 <use xlink:href="#icon-code"></use>
                                             </svg>
                                             查看SQL
+                                        </button>
+
+                                        <!-- 新增: 显示 Python 代码按钮 -->
+                                        <button class="action-btn" v-if="msg.pythonCode"
+                                            @click="showSql(msg.pythonCode)">
+                                            <svg class="icon" style="margin-right:4px">
+                                                <use xlink:href="#icon-code"></use>
+                                            </svg>
+                                            查看代码
                                         </button>
 
                                         <button class="action-btn" v-if="msg.sqlResult && msg.sqlResult.length > 0"
@@ -368,10 +382,20 @@
                         <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 4}" placeholder="询问任何问题以探索您的数据..."
                             v-model="inputMessage" @keydown.enter.native.prevent="handleEnter" resize="none">
                         </el-input>
-                        <el-button type="primary" class="send-btn" @click="handleSend" :loading="isLoading">
-                            <svg class="icon" v-if="!isLoading" style="font-size:16px">
+
+                        <!-- 发送按钮 (不在加载时显示) -->
+                        <el-button type="primary" class="send-btn" @click="handleSend" v-if="!isLoading">
+                            <svg class="icon" style="font-size:16px">
                                 <use xlink:href="#icon-send"></use>
                             </svg>
+                        </el-button>
+
+                        <!-- 停止按钮 (加载时显示) -->
+                        <el-button type="danger" class="send-btn stop-btn" @click="stopQuery" v-if="isLoading">
+                            <svg class="icon" style="font-size:16px">
+                                <use xlink:href="#icon-stop"></use>
+                            </svg>
+                            停止
                         </el-button>
                     </div>
                     <div class="input-footer">

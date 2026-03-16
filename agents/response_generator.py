@@ -129,7 +129,71 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
     execution_result = state.get("execution_result")
     execution_error = state.get("execution_error")
     
-    # 如果有错误
+    # 新增: 获取数据分析结果 (Code-Based 模式)
+    analysis_result = state.get("analysis_result")
+    analysis_error = state.get("analysis_error")
+    
+    # 1. 优先处理分析错误
+    if analysis_error:
+        reply = f"数据分析遇到问题\n\n{analysis_error}\n"
+        return {
+            "final_response": reply,
+            "messages": [("assistant", reply)],
+            "current_node": "response_generator"
+        }
+
+    # 2. 处理分析结果 (METRIC_QUERY)
+    if analysis_result:
+        # 统计完整数据量
+        total_count = len(analysis_result) if isinstance(analysis_result, list) else 1
+        is_truncated = False
+        
+        # 限制传入 LLM 的数据量，避免超出上下文限制
+        MAX_RECORDS_FOR_LLM = 50
+        if isinstance(analysis_result, list) and len(analysis_result) > MAX_RECORDS_FOR_LLM:
+            truncated_result = analysis_result[:MAX_RECORDS_FOR_LLM]
+            is_truncated = True
+        else:
+            truncated_result = analysis_result
+        
+        # 确保结果是 JSON 字符串或可打印对象
+        try:
+            if isinstance(truncated_result, (dict, list)):
+                result_str = json.dumps(truncated_result, ensure_ascii=False, indent=2, cls=SQLResultEncoder)
+            else:
+                result_str = str(truncated_result)
+        except:
+            result_str = str(truncated_result)
+            
+        if llm_client is not None:
+            # 如果数据被截断，在 prompt 中说明
+            if is_truncated:
+                result_str += f'\n\n[注意: 以上仅展示前 {MAX_RECORDS_FOR_LLM} 条数据，共 {total_count} 条。请在回复中提醒用户通过"查看数据"按钮查看完整数据。]'
+            
+            prompt = QUERY_RESULT_PROMPT.format(
+                user_query=user_query,
+                result_data=result_str
+            )
+            response = llm_client.invoke(prompt)
+            reply = response.content if hasattr(response, 'content') else str(response)
+            
+            # 如果数据被截断，在回复末尾追加提示
+            if is_truncated:
+                reply += f'\n\n（字数：{len(reply)}）\n\n> 注意：以上分析基于前 {MAX_RECORDS_FOR_LLM} 条数据，完整结果共 {total_count} 条。请点击下方"查看数据"按钮查看全部数据。'
+        else:
+            reply = f"分析完成，结果如下：\n\n{result_str}"
+            if is_truncated:
+                reply += f'\n\n> 完整数据共 {total_count} 条，请点击"查看数据"按钮查看。'
+            
+        return {
+            "final_response": reply,
+            "messages": [("assistant", reply)],
+            "analysis_result": analysis_result,  # 透传完整分析结果（用于前端显示）
+            "analysis_code": state.get("analysis_code"),  # 透传分析代码
+            "current_node": "response_generator"
+        }
+
+    # 3. 处理 SQL 执行错误 (VALUE_QUERY)
     if execution_error:
         reply = f"查询执行遇到问题\n\n{execution_error}\n\n"
         if generated_sql:
@@ -140,7 +204,7 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
             "current_node": "response_generator"
         }
     
-    # 没有结果
+    # 4. 处理 SQL 执行结果 (VALUE_QUERY)
     if not execution_result:
         reply = "查询完成，但没有找到符合条件的数据。\n\n"
         reply += "建议您：\n"
@@ -154,7 +218,7 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
             "current_node": "response_generator" 
         }
     
-    # 有结果，使用 LLM 生成自然语言回复
+    # 有 SQL 结果
     if llm_client is not None:
         result_str = json.dumps(execution_result[:10], ensure_ascii=False, indent=2, cls=SQLResultEncoder)
         prompt = QUERY_RESULT_PROMPT.format(
@@ -167,16 +231,14 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
         # 简单格式化
         result_count = len(execution_result)
         reply = f"查询完成，共找到 {result_count} 条结果\n\n"
-        
-        # 显示前几条
         for i, row in enumerate(execution_result[:5]):
             reply += f"{i+1}. {json.dumps(row, ensure_ascii=False)}\n"
-        
         if result_count > 5:
             reply += f"\n... 还有 {result_count - 5} 条结果"
     
-    # 附加 SQL (可选，根据配置)
-    reply += f"\n\n---\n执行的 SQL：\n```sql\n{generated_sql}\n```"
+    # 附加 SQL
+    if generated_sql:
+        reply += f"\n\n---\n执行的 SQL：\n```sql\n{generated_sql}\n```"
     
     return {
         "final_response": reply,

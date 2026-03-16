@@ -537,6 +537,20 @@ body {
     justify-content: center;
 }
 
+/* 停止按钮样式 */
+.stop-btn {
+    width: auto !important;
+    padding: 0 12px !important;
+    gap: 4px;
+    background-color: #f56c6c !important;
+    border-color: #f56c6c !important;
+}
+
+.stop-btn:hover {
+    background-color: #f78989 !important;
+    border-color: #f78989 !important;
+}
+
 .input-footer {
     text-align: center;
     font-size: 12px;
