@@ -78,7 +78,19 @@ def create_verifier(llm_client=None):
                 "current_node": "verifier"
             }
         
-        # 4. 如果提供了 ground_truth，进行对比验证 (训练模式)
+        # 4. 语义验证: 检查结果是否符合查询计划的预期
+        query_plan = state.get("query_plan", {})
+        if query_plan:
+            semantic_check = _check_semantic_validity(analysis_result, query_plan)
+            if not semantic_check["valid"]:
+                return {
+                    "verification_passed": False,
+                    "verification_feedback": f"语义验证未通过: {semantic_check['message']}",
+                    "verification_count": new_verification_count,
+                    "current_node": "verifier"
+                }
+
+        # 5. 如果提供了 ground_truth，进行对比验证 (训练模式)
         if ground_truth is not None:
             match_result = _compare_with_ground_truth(analysis_result, ground_truth)
             if not match_result["match"]:
@@ -88,7 +100,6 @@ def create_verifier(llm_client=None):
                     "verification_count": new_verification_count,
                     "current_node": "verifier"
                 }
-        
         # 5. 所有检查通过
         return {
             "verification_passed": True,
@@ -125,6 +136,70 @@ def _check_result_validity(result: Any) -> Dict[str, Any]:
     
     return {"valid": True, "message": "结果有效"}
 
+
+def _check_semantic_validity(result: Any, query_plan: dict) -> Dict[str, Any]:
+    """
+    语义验证: 检查结果是否符合查询计划的预期
+    
+    Args:
+        result: 分析结果
+        query_plan: 查询计划 (containing calculation_type, target_fields, etc.)
+    
+    Returns:
+        {"valid": bool, "message": str}
+    """
+    calc_type = query_plan.get("calculation_type", "").lower()
+    
+    # 检查: 排名/对比类查询应该返回多条记录
+    if calc_type in ("ranking", "comparison", "排名", "对比", "区域对比", "区域排名"):
+        if isinstance(result, (list, tuple)) and len(result) <= 1:
+            return {
+                "valid": False,
+                "message": f"查询计划要求'{calc_type}'，但结果只有 {len(result)} 条记录。请检查筛选条件是否过严，或是否遗漏了多区域/多学校的数据。"
+            }
+    
+    # 检查: 结果中的数值是否全部为 0 (可疑模式)
+    if isinstance(result, list) and len(result) > 1:
+        _check = _detect_suspicious_values(result)
+        if not _check["valid"]:
+            return _check
+    
+    return {"valid": True, "message": "语义验证通过"}
+
+
+def _detect_suspicious_values(result_list: list) -> Dict[str, Any]:
+    """
+    检测结果中的可疑模式 (e.g., 全零、全同值)
+    
+    仅对 list[dict] 格式的结果进行检查。
+    """
+    if not result_list or not isinstance(result_list[0], dict):
+        return {"valid": True, "message": ""}
+    
+    # 提取所有数值列
+    numeric_cols = {}
+    for row in result_list:
+        for k, v in row.items():
+            if isinstance(v, (int, float)) and not math.isnan(v):
+                numeric_cols.setdefault(k, []).append(v)
+    
+    for col_name, values in numeric_cols.items():
+        if len(values) < 2:
+            continue
+        # 检查全零
+        if all(v == 0 for v in values):
+            return {
+                "valid": False,
+                "message": f"列 '{col_name}' 的所有值均为 0，可能查询了错误的字段或筛选条件有误。请检查 SQL 查询中的字段名和 WHERE 条件。"
+            }
+        # 检查全同值 (非零)
+        if len(set(values)) == 1 and values[0] != 0:
+            return {
+                "valid": False,
+                "message": f"列 '{col_name}' 的所有值均相同 ({values[0]})，可能查询了错误的字段或缺少 GROUP BY。"
+            }
+    
+    return {"valid": True, "message": ""}
 
 def _compare_with_ground_truth(result: Any, ground_truth: Any) -> Dict[str, Any]:
     """

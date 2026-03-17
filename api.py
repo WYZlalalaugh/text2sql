@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, Any
 import os
 import re
 import json
@@ -15,12 +15,12 @@ from datetime import date, datetime
 
 class CustomJSONEncoder(json.JSONEncoder):
     """处理 Decimal 和日期类型的 JSON 编码器"""
-    def default(self, obj):
-        if isinstance(obj, Decimal):
-            return float(obj)
-        if isinstance(obj, (date, datetime)):
-            return obj.isoformat()
-        return super().default(obj)
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return float(o)
+        if isinstance(o, (date, datetime)):
+            return o.isoformat()
+        return super().default(o)
 
 from config import config
 from state import AgentState
@@ -43,7 +43,7 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
-    session_id: Optional[str] = "default"
+    session_id: str = "default"
     enable_suggestions: bool = False  # 新增推荐开关
 
 
@@ -96,7 +96,7 @@ NODE_DISPLAY_NAMES = {
 }
 
 
-async def stream_graph_execution(graph, initial_state: AgentState, session: dict) -> AsyncGenerator[str, None]:
+async def stream_graph_execution(graph, initial_state: AgentState, session: dict[str, Any]) -> AsyncGenerator[str, None]:
     """
     流式执行 LangGraph 并发送步骤更新
     
@@ -189,6 +189,7 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
                         if "analysis_code" in node_output and node_output.get("analysis_code"):
                             code_preview = node_output.get("analysis_code", "")[:100]
                             step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
+                            step_data['python_code'] = node_output.get("analysis_code", "")
                         elif "analysis_error" in node_output:
                             step_data['detail'] = "代码生成遇到问题"
                         else:
@@ -317,12 +318,68 @@ async def chat_stream(request: ChatRequest):
                                 'status': 'complete',
                                 'message': f"{NODE_DISPLAY_NAMES[node_name]}完成"
                             }
-                            
-                            if node_name == "sql_generator" and "generated_sql" in node_output:
+
+                            if node_name == "intent_classifier" and "intent_type" in node_output:
+                                intent_val = node_output['intent_type']
+                                intent_str = intent_val.value if hasattr(intent_val, 'value') else str(intent_val)
+                                step_data['detail'] = f"识别意图: {intent_str}"
+
+                            elif node_name == "query_planner":
+                                plan = node_output.get('query_plan') or accumulated_state.get('query_plan', {})
+                                selected = plan.get('selected_metrics', []) if isinstance(plan, dict) else []
+                                calc = plan.get('calculation_type', '') if isinstance(plan, dict) else ''
+
+                                if selected:
+                                    step_data['detail'] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
+                                elif calc:
+                                    step_data['detail'] = f"计算类型: {calc}"
+                                else:
+                                    step_data['detail'] = "正在规划查询路径..."
+
+                                reasoning = node_output.get('reasoning_plan') or accumulated_state.get('reasoning_plan', '')
+                                if reasoning:
+                                    step_data['reasoning'] = reasoning
+
+                            elif node_name == "sql_generator" and "generated_sql" in node_output:
                                 step_data['detail'] = "SQL 语句已生成"
                                 step_data['sql'] = node_output.get('generated_sql', '')
-                            
-                            yield f"data: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+
+                            elif node_name == "sql_corrector":
+                                step_data['detail'] = "AI 正在对执行结果进行反思和修正..."
+                                if "sql_reflection" in node_output:
+                                    step_data['reflection'] = node_output.get('sql_reflection', '')
+                                if "generated_sql" in node_output:
+                                    step_data['sql'] = node_output.get('generated_sql', '')
+
+                            elif node_name == "data_analyzer":
+                                if "analysis_code" in node_output and node_output.get("analysis_code"):
+                                    step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
+                                    step_data['python_code'] = node_output.get("analysis_code", "")
+                                elif "analysis_error" in node_output:
+                                    step_data['detail'] = "代码生成遇到问题"
+                                else:
+                                    step_data['detail'] = "正在生成分析代码..."
+
+                            elif node_name == "python_executor":
+                                if "analysis_result" in node_output and node_output.get("analysis_result"):
+                                    result = node_output.get("analysis_result")
+                                    if isinstance(result, list):
+                                        step_data['detail'] = f"代码执行成功，返回 {len(result)} 条结果"
+                                    else:
+                                        step_data['detail'] = "代码执行成功"
+                                elif "analysis_error" in node_output:
+                                    step_data['detail'] = f"执行出错: {node_output.get('analysis_error', '')[:50]}..."
+                                else:
+                                    step_data['detail'] = "正在执行分析代码..."
+
+                            elif node_name == "verifier":
+                                if node_output.get("verification_passed"):
+                                    step_data['detail'] = "验证通过"
+                                else:
+                                    feedback = node_output.get("verification_feedback", "")
+                                    step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
+
+                            yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
                             current_step += 1
                             await asyncio.sleep(0.1)
                 
@@ -394,7 +451,7 @@ async def record_log(state: AgentState):
             
         log_trajectory(
             trajectory_id=tid,
-            user_query=state.get("user_query"),
+            user_query=state.get("user_query") or "",
             query_plan=state.get("query_plan"),
             analysis_code=state.get("analysis_code"),
             analysis_result=state.get("analysis_result"),
@@ -452,14 +509,69 @@ async def chat(request: ChatRequest):
     except Exception as e:
         import traceback
         print(f"非流式执行错误: {traceback.format_exc()}")
-    except Exception as e:
-        import traceback
-        print(f"非流式执行错误: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 class ChartRequest(BaseModel):
     session_id: str
+
+
+class ReplayRequest(BaseModel):
+    session_id: str
+    sql: Optional[str] = None
+    python_code: Optional[str] = None
+
+
+def _to_jsonable(data: Any) -> Any:
+    """将任意对象转换为可 JSON 序列化的数据"""
+    return json.loads(json.dumps(data, ensure_ascii=False, cls=CustomJSONEncoder))
+
+
+@app.post("/api/replay-data")
+async def replay_data(request: ReplayRequest):
+    """根据 SQL 或 Python 代码回放数据"""
+    try:
+        session = get_or_create_session(request.session_id)
+
+        # 优先回放 Python 代码
+        if request.python_code and request.python_code.strip():
+            from agents.python_executor import execute_python_code, clean_code
+
+            code = clean_code(request.python_code)
+            data, error = execute_python_code(code)
+            if error:
+                return {"data": None, "error": f"回放失败: {error}"}
+
+            if session.get("state"):
+                state = session["state"]
+                state["analysis_result"] = data
+                session["state"] = state
+
+            return {"data": _to_jsonable(data), "source": "python"}
+
+        # 其次回放 SQL
+        if request.sql and request.sql.strip():
+            from tools.db_client import load_data
+
+            df = load_data(request.sql)
+            data = df.to_dict(orient='records')
+
+            if session.get("state"):
+                state = session["state"]
+                state["execution_result"] = data
+                session["state"] = state
+
+            return {"data": _to_jsonable(data), "source": "sql"}
+
+        # 没提供回放源时，回退到当前会话数据
+        state = session.get("state") or {}
+        data = state.get("analysis_result") or state.get("execution_result")
+        return {"data": _to_jsonable(data), "source": "session"}
+
+    except Exception as e:
+        import traceback
+        print(f"数据回放错误: {traceback.format_exc()}")
+        return {"data": None, "error": f"回放失败: {str(e)}"}
 
 
 @app.post("/api/chart")

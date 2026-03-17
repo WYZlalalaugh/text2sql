@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, nextTick, onMounted } = Vue;
+const { createApp, ref, reactive, nextTick, onMounted, watch, onBeforeUnmount } = Vue;
 const { ElMessage } = ElementPlus;
 
 const app = createApp({
@@ -8,9 +8,12 @@ const app = createApp({
         const inputMessage = ref('');
         const isLoading = ref(false);
         const chatWrapper = ref(null);
-        let sessionId = 'session_' + Date.now();
+        const createSessionId = () => 'session_' + Date.now();
+        let sessionId = createSessionId();
         const currentThreadTitle = ref('');
         const enableSuggestions = ref(false); // 默认关闭开关
+        const isDarkTheme = ref(true);
+        const STORAGE_KEY = 'text2sql_chat_state_v1';
 
         // 当前回答的步骤（用于流式显示）
         const currentSteps = ref([]);
@@ -18,6 +21,7 @@ const app = createApp({
         // 数据展示弹窗
         const dialogVisible = ref(false);
         const tableData = ref([]);
+        const nestedTableSections = ref([]);
 
         // SQL 展示弹窗
         const sqlDialogVisible = ref(false);
@@ -49,8 +53,114 @@ const app = createApp({
         };
 
 
-        const showData = (data) => {
-            tableData.value = data;
+        const normalizeTableData = (data) => {
+            if (Array.isArray(data)) return data;
+            if (data && typeof data === 'object') return [data];
+            if (data === null || data === undefined) return [];
+            return [{ value: data }];
+        };
+
+        const isRecordArray = (value) => {
+            if (!Array.isArray(value) || value.length === 0) return false;
+            return value.every((item) => item && typeof item === 'object' && !Array.isArray(item));
+        };
+
+        const prepareDialogTableData = (rows) => {
+            const sections = [];
+            const displayRows = rows.map((row) => {
+                if (!row || typeof row !== 'object' || Array.isArray(row)) {
+                    return row;
+                }
+
+                const nextRow = { ...row };
+                Object.keys(nextRow).forEach((key) => {
+                    const value = nextRow[key];
+                    if (isRecordArray(value)) {
+                        sections.push({
+                            key,
+                            title: `${key} 明细`,
+                            data: value
+                        });
+                        nextRow[key] = `见下方明细表（${value.length} 条）`;
+                    }
+                });
+                return nextRow;
+            });
+
+            return { displayRows, sections };
+        };
+
+        const hasResultData = (msg) => {
+            const data = msg?.sqlResult;
+            if (Array.isArray(data)) return data.length > 0;
+            if (data && typeof data === 'object') return Object.keys(data).length > 0;
+            return data !== null && data !== undefined && data !== '';
+        };
+
+        const hasReplaySource = (msg) => {
+            return Boolean((msg?.sql && String(msg.sql).trim()) || (msg?.pythonCode && String(msg.pythonCode).trim()));
+        };
+
+        const canViewData = (msg) => {
+            return hasResultData(msg) || hasReplaySource(msg);
+        };
+
+        const canGenerateChart = (msg) => {
+            const data = msg?.sqlResult;
+            return Array.isArray(data) && data.length > 0;
+        };
+
+        const fetchReplayData = async (msg) => {
+            const response = await fetch('/api/replay-data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    sql: msg?.sql || null,
+                    python_code: msg?.pythonCode || null
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('回放数据请求失败');
+            }
+
+            const payload = await response.json();
+            if (payload.error) {
+                throw new Error(payload.error);
+            }
+
+            return payload.data;
+        };
+
+        const showData = async (msgOrData) => {
+            let data = msgOrData;
+            const isMessageObject = msgOrData && typeof msgOrData === 'object' && !Array.isArray(msgOrData) && 'role' in msgOrData;
+
+            if (isMessageObject) {
+                const msg = msgOrData;
+                if (!hasResultData(msg) && hasReplaySource(msg)) {
+                    msg.isReplayLoading = true;
+                    try {
+                        const replayData = await fetchReplayData(msg);
+                        msg.sqlResult = replayData;
+                        data = replayData;
+                        ElMessage.success('已回放并加载数据');
+                    } catch (e) {
+                        ElMessage.error(`回放失败: ${e.message || e}`);
+                        return;
+                    } finally {
+                        msg.isReplayLoading = false;
+                    }
+                } else {
+                    data = msg.sqlResult;
+                }
+            }
+
+            const normalizedRows = normalizeTableData(data);
+            const prepared = prepareDialogTableData(normalizedRows);
+            tableData.value = prepared.displayRows;
+            nestedTableSections.value = prepared.sections;
             dialogVisible.value = true;
         };
 
@@ -96,11 +206,500 @@ const app = createApp({
 
         // 推荐问题（动态获取）
         const suggestedQuestions = ref([]);
+        const MAX_PERSIST_MESSAGES = 80;
+        const MAX_THREAD_COUNT = 50;
+        const threadList = ref([]);
+        const activeThreadId = ref('');
+        let suspendPersist = false;
+
+        const createThreadId = () => `thread_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+        const applyTheme = (darkMode) => {
+            const theme = darkMode ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        };
+
+        const toggleTheme = (value) => {
+            isDarkTheme.value = Boolean(value);
+            applyTheme(isDarkTheme.value);
+            saveClientState();
+        };
+
+        const serializeMessageForStorage = (msg) => {
+            if (!msg || typeof msg !== 'object') return msg;
+
+            return {
+                role: msg.role,
+                content: msg.content || '',
+                steps: Array.isArray(msg.steps) ? msg.steps : [],
+                sql: msg.sql || null,
+                pythonCode: msg.pythonCode || null,
+                needClarification: Boolean(msg.needClarification),
+                clarificationSections: Array.isArray(msg.clarificationSections) ? msg.clarificationSections : [],
+                reflection: msg.reflection || '',
+                reasoning: msg.reasoning || '',
+                chartReasoning: msg.chartReasoning || '',
+                isStreaming: false,
+                isChartLoading: false
+            };
+        };
+
+        const makeThreadSnapshot = (overrides = {}) => ({
+            id: createThreadId(),
+            sessionId: createSessionId(),
+            title: '',
+            messages: [],
+            suggestedQuestions: [],
+            enableSuggestions: enableSuggestions.value,
+            updatedAt: Date.now(),
+            ...overrides
+        });
+
+        const getThreadTitle = (thread) => {
+            if (!thread) return '新对话';
+            if (thread.title && thread.title.trim()) return thread.title;
+            const firstUser = Array.isArray(thread.messages)
+                ? thread.messages.find((m) => m?.role === 'user' && m?.content)
+                : null;
+            if (!firstUser) return '新对话';
+            return firstUser.content.length > 18 ? `${firstUser.content.slice(0, 18)}...` : firstUser.content;
+        };
+
+        const formatThreadTime = (thread) => {
+            const ts = thread?.updatedAt;
+            if (!ts) return '刚刚';
+            const diffMs = Date.now() - ts;
+            const diffMin = Math.floor(diffMs / 60000);
+            if (diffMin < 1) return '刚刚';
+            if (diffMin < 60) return `${diffMin}m`;
+            const diffHour = Math.floor(diffMin / 60);
+            if (diffHour < 24) return `${diffHour}h`;
+            const diffDay = Math.floor(diffHour / 24);
+            return `${diffDay}d`;
+        };
+
+        const upsertActiveThreadFromRuntime = () => {
+            if (!activeThreadId.value) return;
+
+            const snapshot = makeThreadSnapshot({
+                id: activeThreadId.value,
+                sessionId,
+                title: currentThreadTitle.value || '',
+                messages: messages.value
+                    .slice(-MAX_PERSIST_MESSAGES)
+                    .map((msg) => serializeMessageForStorage(msg)),
+                suggestedQuestions: suggestedQuestions.value,
+                enableSuggestions: enableSuggestions.value,
+                updatedAt: Date.now()
+            });
+
+            const idx = threadList.value.findIndex((t) => t.id === activeThreadId.value);
+            if (idx >= 0) {
+                threadList.value[idx] = snapshot;
+            } else {
+                threadList.value.unshift(snapshot);
+            }
+
+            threadList.value = threadList.value
+                .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+                .slice(0, MAX_THREAD_COUNT);
+        };
+
+        const saveClientState = () => {
+            if (suspendPersist) return;
+            try {
+                upsertActiveThreadFromRuntime();
+                const payload = {
+                    version: 2,
+                    activeThreadId: activeThreadId.value,
+                    threads: threadList.value,
+                    uiTheme: isDarkTheme.value ? 'dark' : 'light'
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+            } catch (e) {
+                console.warn('保存本地会话失败:', e);
+            }
+        };
+
+        const applyThreadToRuntime = (thread) => {
+            suspendPersist = true;
+            try {
+                activeThreadId.value = thread.id;
+                sessionId = thread.sessionId;
+                currentThreadTitle.value = thread.title || '';
+                messages.value = Array.isArray(thread.messages)
+                    ? thread.messages.map((msg) => ({
+                        ...msg,
+                        isStreaming: false,
+                        isChartLoading: false,
+                        isReplayLoading: false
+                    }))
+                    : [];
+                suggestedQuestions.value = Array.isArray(thread.suggestedQuestions) ? thread.suggestedQuestions : [];
+                enableSuggestions.value = Boolean(thread.enableSuggestions);
+            } finally {
+                suspendPersist = false;
+            }
+        };
+
+        const createNewThread = () => {
+            if (isLoading.value) {
+                ElMessage.warning('请等待当前查询完成后再新建对话');
+                return;
+            }
+
+            upsertActiveThreadFromRuntime();
+            const freshThread = makeThreadSnapshot();
+            threadList.value.unshift(freshThread);
+            applyThreadToRuntime(freshThread);
+            saveClientState();
+        };
+
+        const switchThread = (threadId) => {
+            if (isLoading.value) {
+                ElMessage.warning('请等待当前查询完成后再切换对话');
+                return;
+            }
+
+            if (!threadId || threadId === activeThreadId.value) return;
+            upsertActiveThreadFromRuntime();
+
+            const target = threadList.value.find((t) => t.id === threadId);
+            if (!target) return;
+            applyThreadToRuntime(target);
+            saveClientState();
+            scrollToBottom();
+        };
+
+        const restoreClientState = () => {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) {
+                    const first = makeThreadSnapshot();
+                    threadList.value = [first];
+                    applyThreadToRuntime(first);
+                    saveClientState();
+                    return;
+                }
+
+                const payload = JSON.parse(raw);
+                if (!payload || typeof payload !== 'object') {
+                    throw new Error('invalid payload');
+                }
+
+                // v2 多会话结构
+                if (Array.isArray(payload.threads)) {
+                    if (payload.uiTheme === 'light' || payload.uiTheme === 'dark') {
+                        isDarkTheme.value = payload.uiTheme === 'dark';
+                        applyTheme(isDarkTheme.value);
+                    }
+
+                    const threads = payload.threads
+                        .filter((t) => t && typeof t === 'object')
+                        .map((t) => makeThreadSnapshot({
+                            id: t.id || createThreadId(),
+                            sessionId: t.sessionId || createSessionId(),
+                            title: t.title || '',
+                            messages: Array.isArray(t.messages) ? t.messages : [],
+                            suggestedQuestions: Array.isArray(t.suggestedQuestions) ? t.suggestedQuestions : [],
+                            enableSuggestions: Boolean(t.enableSuggestions),
+                            updatedAt: t.updatedAt || Date.now()
+                        }))
+                        .slice(0, MAX_THREAD_COUNT);
+
+                    if (threads.length === 0) {
+                        const first = makeThreadSnapshot();
+                        threadList.value = [first];
+                        applyThreadToRuntime(first);
+                        saveClientState();
+                        return;
+                    }
+
+                    threadList.value = threads.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+                    const activeId = payload.activeThreadId;
+                    const activeThread = threadList.value.find((t) => t.id === activeId) || threadList.value[0];
+                    applyThreadToRuntime(activeThread);
+                    saveClientState();
+                    return;
+                }
+
+                // 兼容旧版单会话结构
+                if (payload.uiTheme === 'light' || payload.uiTheme === 'dark') {
+                    isDarkTheme.value = payload.uiTheme === 'dark';
+                    applyTheme(isDarkTheme.value);
+                }
+
+                const legacyThread = makeThreadSnapshot({
+                    sessionId: typeof payload.sessionId === 'string' && payload.sessionId.trim() ? payload.sessionId : createSessionId(),
+                    title: typeof payload.currentThreadTitle === 'string' ? payload.currentThreadTitle : '',
+                    messages: Array.isArray(payload.messages) ? payload.messages : [],
+                    suggestedQuestions: Array.isArray(payload.suggestedQuestions) ? payload.suggestedQuestions : [],
+                    enableSuggestions: typeof payload.enableSuggestions === 'boolean' ? payload.enableSuggestions : false,
+                    updatedAt: Date.now()
+                });
+
+                threadList.value = [legacyThread];
+                applyThreadToRuntime(legacyThread);
+                saveClientState();
+            } catch (e) {
+                console.warn('恢复本地会话失败，已忽略:', e);
+                localStorage.removeItem(STORAGE_KEY);
+                const first = makeThreadSnapshot();
+                threadList.value = [first];
+                applyThreadToRuntime(first);
+                saveClientState();
+            }
+        };
+
+        const clearClientState = () => {
+            try {
+                localStorage.removeItem(STORAGE_KEY);
+            } catch (e) {
+                console.warn('清理本地会话失败:', e);
+            }
+        };
 
         // 格式化 Markdown
         const formatMarkdown = (text) => {
             if (!text) return '';
             return marked.parse(text);
+        };
+
+        const CLARIFICATION_PREFIXES = [
+            '您是希望',
+            '您希望',
+            '您想',
+            '您更关注',
+            '您更想',
+            '您要',
+            '请您',
+            '请'
+        ];
+
+        const sanitizeClarificationOption = (text) => {
+            let value = (text || '').trim();
+            value = value.replace(/^[○●•◦▪·\-*\s]+/, '');
+            value = value.replace(/^[,，.。:：;；\-\s]+/, '');
+            value = value.replace(/[？?。；;]+$/g, '').trim();
+
+            CLARIFICATION_PREFIXES.forEach((prefix) => {
+                if (value.startsWith(prefix)) {
+                    value = value.slice(prefix.length).trim();
+                }
+            });
+
+            if (value.includes('，')) {
+                const commaParts = value.split(/[，,]/).map((part) => part.trim()).filter(Boolean);
+                if (commaParts.length > 1) {
+                    value = commaParts[commaParts.length - 1];
+                }
+            }
+
+            value = value.replace(/^(以|的是|分析的是|关注的是|想分析的是|想查看的是|想看的|想要的|选择|明确)\s*/, '');
+            value = value.replace(/^[a-zA-Z][\)\.、]\s*/, '');
+            return value.trim();
+        };
+
+        const dedupeOptions = (options) => {
+            const seen = new Set();
+            return options.filter((option) => {
+                if (!option) return false;
+                if (seen.has(option)) return false;
+                seen.add(option);
+                return true;
+            });
+        };
+
+        const extractLetterOptions = (body) => {
+            const markerRegex = /([a-zA-Z])[\)\.、]/g;
+            const markers = [];
+            let match;
+            while ((match = markerRegex.exec(body)) !== null) {
+                markers.push({
+                    index: match.index,
+                    tokenLength: match[0].length
+                });
+            }
+
+            if (markers.length < 2) return [];
+
+            const options = [];
+            for (let i = 0; i < markers.length; i++) {
+                const start = markers[i].index + markers[i].tokenLength;
+                const end = i + 1 < markers.length ? markers[i + 1].index : body.length;
+                const candidate = sanitizeClarificationOption(body.slice(start, end));
+                if (candidate) options.push(candidate);
+            }
+
+            return dedupeOptions(options);
+        };
+
+        const extractClarificationOptions = (body) => {
+            const circledMatches = [...body.matchAll(/([①②③④⑤⑥⑦⑧⑨⑩])\s*([^①②③④⑤⑥⑦⑧⑨⑩]+)/g)];
+            if (circledMatches.length >= 2) {
+                return dedupeOptions(circledMatches.map((match) => sanitizeClarificationOption(match[2])));
+            }
+
+            const letterOptions = extractLetterOptions(body);
+            if (letterOptions.length >= 2) {
+                return letterOptions;
+            }
+
+            const numericMatches = [...body.matchAll(/(?:^|\s|[，,、:：])(\d+[.)、])\s*([^\d]+?)(?=(?:\s+\d+[.)、])|$)/g)];
+            if (numericMatches.length >= 2) {
+                return dedupeOptions(numericMatches.map((match) => sanitizeClarificationOption(match[2])));
+            }
+
+            const quotedMatches = [...body.matchAll(/“([^”]+)”/g)];
+            if (quotedMatches.length >= 2) {
+                return dedupeOptions(quotedMatches.map((match) => sanitizeClarificationOption(match[1])));
+            }
+
+            if (body.includes('还是')) {
+                const options = dedupeOptions(
+                    body
+                        .split(/\s*还是\s*/)
+                        .map((part) => sanitizeClarificationOption(part))
+                );
+                return options.length >= 2 ? options : [];
+            }
+
+            return [];
+        };
+
+        const parseClarificationSections = (text) => {
+            if (!text) return [];
+
+            const lines = text
+                .split('\n')
+                .map((line) => line.trim())
+                .filter(Boolean);
+
+            const blocks = [];
+            let current = null;
+
+            lines.forEach((line) => {
+                const match = line.match(/^(\d+)[.、]\s*(.+)$/);
+                if (match) {
+                    if (current) blocks.push(current);
+                    current = {
+                        index: match[1],
+                        promptLine: match[2].trim(),
+                        bodyLines: []
+                    };
+                    return;
+                }
+
+                if (current) {
+                    current.bodyLines.push(line);
+                }
+            });
+
+            if (current) blocks.push(current);
+
+            return blocks
+                .map((block) => {
+                    const combinedBody = [block.promptLine, ...block.bodyLines].join('\n');
+                    const options = extractClarificationOptions(combinedBody);
+
+                    if (options.length < 2) {
+                        return null;
+                    }
+
+                    const markerIndex = block.promptLine.search(/[a-zA-Z][\)\.、]|[①②③④⑤⑥⑦⑧⑨⑩]/);
+                    let prompt = markerIndex > 0 ? block.promptLine.slice(0, markerIndex).trim() : block.promptLine;
+                    prompt = prompt.replace(/(请选择|请您选择|请选择或补充说明)[^。？！?!]*/g, '').trim();
+                    if (prompt.endsWith('：') || prompt.endsWith(':')) {
+                        prompt = prompt.slice(0, -1).trim();
+                    }
+                    if (prompt && !/[？?]$/.test(prompt)) {
+                        prompt = `${prompt}？`;
+                    }
+
+                    return {
+                        id: `clarification-${block.index}`,
+                        index: block.index,
+                        prompt,
+                        options,
+                        selectedOption: ''
+                    };
+                })
+                .filter(Boolean);
+        };
+
+        const buildClarificationDraft = (sections) => {
+            if (!Array.isArray(sections)) return '';
+            return sections
+                .map((section) => {
+                    if (!section.selectedOption) return '';
+                    return `${section.index}) ${section.selectedOption}`;
+                })
+                .filter((line) => Boolean(line))
+                .join('\n');
+        };
+
+        const mergeClarificationDraft = (currentInput, previousDraft, nextDraft) => {
+            const current = (currentInput || '').trim();
+            const previous = (previousDraft || '').trim();
+            const next = (nextDraft || '').trim();
+
+            if (!current || current === previous) {
+                return next;
+            }
+
+            if (previous && current.includes(previous)) {
+                return current.replace(previous, next).trim();
+            }
+
+            if (!next) {
+                return current;
+            }
+
+            return `${current}\n${next}`.trim();
+        };
+
+        const lastClarificationDraft = ref('');
+
+        const toggleClarificationOption = (msg, sectionIndex, option) => {
+            const section = msg.clarificationSections?.[sectionIndex];
+            if (!section) return;
+
+            section.selectedOption = section.selectedOption === option ? '' : option;
+
+            const nextDraft = buildClarificationDraft(msg.clarificationSections);
+            inputMessage.value = mergeClarificationDraft(
+                inputMessage.value,
+                lastClarificationDraft.value,
+                nextDraft
+            );
+            lastClarificationDraft.value = nextDraft;
+        };
+
+        const clearClarificationSelection = (msg) => {
+            if (!msg?.clarificationSections?.length) return;
+
+            msg.clarificationSections.forEach((section) => {
+                section.selectedOption = '';
+            });
+
+            inputMessage.value = mergeClarificationDraft(
+                inputMessage.value,
+                lastClarificationDraft.value,
+                ''
+            );
+            lastClarificationDraft.value = '';
+        };
+
+        const submitClarificationSelection = (msg) => {
+            if (!msg?.clarificationSections?.length) return;
+
+            const draft = buildClarificationDraft(msg.clarificationSections).trim();
+            if (!draft) {
+                ElMessage.warning('请先选择至少一个澄清选项');
+                return;
+            }
+
+            sendMessage(draft);
         };
 
         // 发送消息
@@ -141,6 +740,7 @@ const app = createApp({
             // 添加用户消息
             messages.value.push({ role: 'user', content: content });
             inputMessage.value = '';
+            lastClarificationDraft.value = '';
             isLoading.value = true;
             currentSteps.value = [];
 
@@ -153,6 +753,22 @@ const app = createApp({
 
             // 创建新的 AbortController
             currentAbortController = new AbortController();
+
+            messages.value.push({
+                role: 'assistant',
+                content: '',
+                steps: [],
+                sql: null,
+                pythonCode: null,
+                sqlResult: null,
+                isStreaming: true,
+                activeCollapse: ['1'],
+                reasoning: '',
+                reflection: '',
+                isChartLoading: false,
+                isReplayLoading: false
+            });
+            const tempMessage = messages.value[messages.value.length - 1];
 
             try {
                 // 使用流式 API
@@ -172,17 +788,6 @@ const app = createApp({
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
-
-                // 创建一个临时的助手消息对象（用于显示正在生成的步骤）
-                const tempMessage = {
-                    role: 'assistant',
-                    content: '',
-                    steps: [],
-                    sql: null,
-                    sqlResult: null,
-                    isStreaming: true
-                };
-                messages.value.push(tempMessage);
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -238,6 +843,10 @@ const app = createApp({
                                 } else if (event.type === 'result') {
                                     // 最终结果
                                     tempMessage.content = event.response;
+                                    tempMessage.needClarification = Boolean(event.need_clarification);
+                                    tempMessage.clarificationSections = event.need_clarification
+                                        ? parseClarificationSections(event.response)
+                                        : [];
                                     if (event.sql) {
                                         tempMessage.sql = event.sql;
                                     }
@@ -252,7 +861,7 @@ const app = createApp({
                                         }
                                     }
 
-                                    if (event.data) {
+                                    if (Object.prototype.hasOwnProperty.call(event, 'data')) {
                                         tempMessage.sqlResult = event.data;
                                     }
 
@@ -306,16 +915,18 @@ const app = createApp({
             }
         };
 
-        // 重置对话
+        // 清空当前对话（保留历史线程）
         const resetChat = async () => {
             try {
                 await fetch(`/api/reset?session_id=${sessionId}`, { method: 'POST' });
             } catch (e) {
                 console.error(e);
             }
-            sessionId = 'session_' + Date.now();
+            sessionId = createSessionId();
             messages.value = [];
             currentThreadTitle.value = '';
+            suggestedQuestions.value = [];
+            saveClientState();
         };
 
         const scrollToBottom = () => {
@@ -361,13 +972,45 @@ const app = createApp({
             }
         };
 
+        watch(messages, saveClientState, { deep: true });
+        watch(currentThreadTitle, saveClientState);
+        watch(suggestedQuestions, saveClientState, { deep: true });
+        watch(enableSuggestions, saveClientState);
+        watch(isDarkTheme, (val) => {
+            applyTheme(Boolean(val));
+            saveClientState();
+        });
+
+        onMounted(() => {
+            applyTheme(isDarkTheme.value);
+            restoreClientState();
+            window.addEventListener('beforeunload', saveClientState);
+            scrollToBottom();
+        });
+
+        onBeforeUnmount(() => {
+            window.removeEventListener('beforeunload', saveClientState);
+        });
+
         return {
             messages,
             inputMessage,
             isLoading,
             chatWrapper,
+            threadList,
+            activeThreadId,
             currentThreadTitle,
             suggestedQuestions,
+            isDarkTheme,
+            toggleTheme,
+            getThreadTitle,
+            formatThreadTime,
+            createNewThread,
+            switchThread,
+            hasResultData,
+            hasReplaySource,
+            canViewData,
+            canGenerateChart,
             handleSend,
             handleEnter,
             sendMessage,
@@ -376,6 +1019,7 @@ const app = createApp({
             formatMarkdown,
             dialogVisible,
             tableData,
+            nestedTableSections,
             showData,
             sqlDialogVisible,
             currentSql,
@@ -385,7 +1029,10 @@ const app = createApp({
             currentChartReasoning,
             viewChart,
             enableSuggestions,
-            generateChart
+            generateChart,
+            toggleClarificationOption,
+            clearClarificationSelection,
+            submitClarificationSelection
         };
     }
 });

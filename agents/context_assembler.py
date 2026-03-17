@@ -2,31 +2,12 @@
 上下文组装节点 - 使用 Query Planner 输出和 PromptBuilder 组装 Prompt
 """
 import json
-import os
 from typing import Dict, Any, List, Optional
 
 from state import AgentState, IntentType
-from config import config
 from prompts.prompt_builder import PromptBuilder
 from prompts.domain_config import EducationDomain, DomainConfig
-
-
-def load_schema() -> Dict[str, Any]:
-    """加载数据库 Schema"""
-    schema_path = config.paths.schema_path
-    if os.path.exists(schema_path):
-        with open(schema_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-
-def load_full_metrics() -> Dict[str, Any]:
-    """加载完整指标体系"""
-    metrics_path = config.paths.metrics_path
-    if os.path.exists(metrics_path):
-        with open(metrics_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
+from tools.schema_cache import get_schema, get_metrics
 
 
 def filter_metrics_by_selection(full_metrics: Dict, selected_metrics: List[str]) -> str:
@@ -130,8 +111,8 @@ def create_context_assembler(prompt_builder: PromptBuilder = None):
         selected_metrics = state.get("selected_metrics", [])
         
         # 加载资源
-        schema = load_schema()
-        full_metrics = load_full_metrics()
+        schema = get_schema()
+        full_metrics = get_metrics()
         
         # 获取域配置和 PromptBuilder
         domain = get_domain_config()

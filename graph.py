@@ -172,8 +172,21 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         }
     )
     
-    # QueryPlanner -> ContextAssembler
-    workflow.add_edge("query_planner", "context_assembler")
+    # QueryPlanner -> 条件路由 (规划失败时短路到 response_generator)
+    def route_after_planner(state: AgentState) -> Literal["context_assembler", "response_generator"]:
+        planning_error = state.get("planning_error")
+        if planning_error:
+            return "response_generator"
+        return "context_assembler"
+    
+    workflow.add_conditional_edges(
+        "query_planner",
+        route_after_planner,
+        {
+            "context_assembler": "context_assembler",
+            "response_generator": "response_generator"
+        }
+    )
     
     # ContextAssembler 后的条件路由 (根据意图类型分流)
     def route_after_context_assembler(state: AgentState) -> Literal["sql_generator", "data_analyzer"]:

@@ -141,9 +141,36 @@ def execute_python_code(code: str, data_file_path: str = None) -> Tuple[Any, Opt
     }
     
     # 注入 load_data 工具 (Code-Based 模式)
+    # 使用智能包装器，捕获 SQL 错误并生成结构化反馈
+    _sql_errors = []  # 收集执行过程中的 SQL 错误信息
+    
     try:
-        from tools.db_client import load_data
-        safe_globals['load_data'] = load_data
+        from tools.db_client import load_data as _raw_load_data
+        from tools.schema_cache import get_schema
+        
+        def load_data_with_diagnosis(sql: str):
+            """包装 load_data，当 SQL 执行失败时提供结构化错误信息"""
+            try:
+                return _raw_load_data(sql)
+            except Exception as e:
+                # 构建 SQL 诊断信息
+                error_msg = str(e)
+                schema = get_schema()
+                available_tables = list(schema.keys()) if isinstance(schema, dict) else []
+                
+                # 记录 SQL 错误详情
+                sql_error_detail = (
+                    f"SQL 执行失败:\n"
+                    f"  错误: {error_msg}\n"
+                    f"  失败的 SQL: {sql}\n"
+                    f"  可用表名: {', '.join(available_tables)}"
+                )
+                _sql_errors.append(sql_error_detail)
+                
+                # 重新抛出，包含诊断信息
+                raise RuntimeError(sql_error_detail) from e
+        
+        safe_globals['load_data'] = load_data_with_diagnosis
     except ImportError:
         # 如果 tools 模块未初始化，提供一个占位函数
         def load_data_placeholder(sql: str):
@@ -177,7 +204,11 @@ def execute_python_code(code: str, data_file_path: str = None) -> Tuple[Any, Opt
         return None, error_msg
         
     except Exception as e:
-        error_msg = f"代码执行错误: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        # 如果有 SQL 错误详情，优先使用结构化反馈 (更有助于重试修复)
+        if _sql_errors:
+            error_msg = "SQL 执行错误:\n" + "\n".join(_sql_errors)
+        else:
+            error_msg = f"代码执行错误: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         return None, error_msg
 
 

@@ -12,22 +12,11 @@
 - Code-Based 模式下不依赖 CSV 文件
 """
 from typing import Dict, Any, Optional
-import os
-import json
 
 from state import AgentState, IntentType
-from config import config
 from prompts.data_analyzer_prompt import build_data_analyzer_prompt
 from agents.python_executor import clean_code
-
-
-def load_metrics_definitions() -> Dict[str, Any]:
-    """加载指标定义文件"""
-    metrics_path = config.paths.metrics_path
-    if os.path.exists(metrics_path):
-        with open(metrics_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
+from tools.schema_cache import get_metrics
 
 
 def create_data_analyzer(llm_client):
@@ -60,7 +49,7 @@ def create_data_analyzer(llm_client):
         verification_count = state.get("verification_count", 0)
         
         # 加载指标定义
-        metrics_definitions = load_metrics_definitions()
+        metrics_definitions = get_metrics()
         
         # 使用新的 Code-Based Prompt 构建函数
         prompt = build_data_analyzer_prompt(

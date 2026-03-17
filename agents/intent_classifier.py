@@ -2,11 +2,10 @@
 意图分类智能体 - 使用 LLM 分析用户查询意图
 """
 import json
-import os
 from typing import Dict, Any
 
 from state import AgentState, IntentType, MetricInfo
-from config import config
+from tools.schema_cache import get_metrics_summary
 
 def create_intent_classifier(llm_client, prompt_builder):
     """
@@ -22,22 +21,10 @@ def create_intent_classifier(llm_client, prompt_builder):
         user_query = state.get("user_query", "")
         clarification_response = state.get("clarification_response", "")
         
-        # 关键：如果用户已提供澄清回复，保持原意图为 metric_query，跳过重新分类
-        # 关键：如果用户已提供澄清回复，保持原意图为 metric_query，但需要合并意图
+        # 如果用户已提供澄清回复，将其合并到查询中
+        # 然后正常走 LLM 分类流程，让模型重新判断意图
         if clarification_response:
-            # 简单合并策略：将澄清回复作为上下文附加到原始查询后
-            refined_intent = f"{user_query} (用户补充: {clarification_response})"
-            
-            # 尝试从状态中保留原始意图类型
-            original_intent = state.get("intent_type") or IntentType.METRIC_QUERY
-            
-            return {
-                "intent_type": original_intent,          # 保持原始意图
-                "refined_intent": refined_intent,        # 传递合并后的明确意图
-                "intent_analysis": f"用户提供了澄清回复: {clarification_response}",
-                "correction_count": 0,                   # 初始化计数器
-                "current_node": "intent_classifier"
-            }
+            user_query = f"{user_query} (用户补充: {clarification_response})"
 
         
         # 提取历史对话用于重写 (方案 A)
@@ -55,22 +42,14 @@ def create_intent_classifier(llm_client, prompt_builder):
                 history_lines.append(f"{role}: {content}")
             history_text = "\n".join(history_lines)
         
-        # 加载全量指标体系 (不再使用 matched_metrics)
-        full_metrics_text = ""
-        metrics_path = config.paths.metrics_path
-        if os.path.exists(metrics_path):
-            with open(metrics_path, 'r', encoding='utf-8') as f:
-                try:
-                    data = json.load(f)
-                    full_metrics_text = json.dumps(data, ensure_ascii=False, indent=2)
-                except:
-                    pass
+        # 加载精简指标摘要 (仅一级名称+描述，大幅减少 token)
+        metrics_summary = get_metrics_summary()
         
         # 使用 PromptBuilder 构建提示词 (注入历史)
         prompt = prompt_builder.build_intent_classification_prompt(
             query=user_query,
             chat_history=history_text,
-            full_metrics_context=full_metrics_text
+            full_metrics_context=metrics_summary
         )
         
         # 调用 LLM

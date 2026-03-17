@@ -2,11 +2,10 @@
 歧义检测与澄清智能体 - 使用 LLM 检测查询中的歧义并生成澄清问题
 """
 import json
-import os
 from typing import Dict, Any
 
 from state import AgentState, IntentType
-from config import config
+from tools.schema_cache import get_metrics_text
 
 def create_ambiguity_checker(llm_client, prompt_builder):
     """
@@ -25,16 +24,8 @@ def create_ambiguity_checker(llm_client, prompt_builder):
         clarification_response = state.get("clarification_response", "")
         clarification_count = state.get("clarification_count", 0)
         
-        # 加载全量指标体系
-        full_metrics_text = ""
-        metrics_path = config.paths.metrics_path
-        if os.path.exists(metrics_path):
-            with open(metrics_path, 'r', encoding='utf-8') as f:
-                try:
-                    data = json.load(f)
-                    full_metrics_text = json.dumps(data, ensure_ascii=False, indent=2)
-                except:
-                    pass
+        # 加载全量指标体系 (使用缓存)
+        full_metrics_text = get_metrics_text()
         
         # 如果已经澄清过多次，直接放行
         if clarification_count >= 2:
