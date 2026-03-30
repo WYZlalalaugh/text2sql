@@ -9,13 +9,16 @@ import os
 import logging
 from typing import Dict, Any
 
-from config import config
+try:
+    from config import config
+except ImportError:
+    from ..config import config
 
 logger = logging.getLogger(__name__)
 
 # ============ 模块级缓存 ============
-_schema_cache: Dict[str, Any] = None
-_metrics_cache: Dict[str, Any] = None
+_schema_cache: Dict[str, Any] | None = None
+_metrics_cache: Dict[str, Any] | None = None
 
 
 def get_schema() -> Dict[str, Any]:

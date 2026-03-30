@@ -86,12 +86,18 @@ def _execute_normal(sql: str, db_connection=None) -> Dict[str, Any]:
         result = execute_with_connection(db_connection, sql)
     else:
         result = execute_sql(sql)
+
+    execution_result = result
+    if result is not None and not _is_clean_list_of_dicts(result):
+        from tools.result_normalizer import normalize_and_serialize
+
+        execution_result = normalize_and_serialize(result)
     
     # 生成观测结果（用于 ReAct 反思）
-    observation = format_observation(result)
+    observation = format_observation(execution_result)
     
     return {
-        "execution_result": result,
+        "execution_result": execution_result,
         "execution_observation": observation,
         "execution_error": None,
         "current_node": "sql_executor"
@@ -105,7 +111,7 @@ def _execute_streaming_to_csv(sql: str, db_connection=None) -> Dict[str, Any]:
     使用 fetchmany 分批获取 + csv.DictWriter 流式写入
     优点: O(1) 内存占用, 可处理 GB 级数据
     """
-    import pymysql
+    import pymysql  # pyright: ignore[reportMissingModuleSource]
     
     ensure_temp_dir()
     
@@ -113,8 +119,9 @@ def _execute_streaming_to_csv(sql: str, db_connection=None) -> Dict[str, Any]:
     query_id = str(uuid.uuid4())[:8]
     file_path = os.path.join(TEMP_DIR, f"query_{query_id}.csv")
     
-    connection = None
-    cursor = None
+    connection: Any = None
+    cursor: Any = None
+    owns_connection: bool = False
     row_count = 0
     columns = []
     
@@ -229,8 +236,8 @@ def _sanitize_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _format_streaming_observation(row_count: int, columns: List[str], 
-                                   sample_rows: List[Dict], file_path: str) -> str:
+def _format_streaming_observation(row_count: int, columns: List[str],
+                                   sample_rows: List[Dict[str, Any]], file_path: str) -> str:
     """格式化流式执行的观测结果"""
     if row_count == 0:
         return (
@@ -292,7 +299,7 @@ def is_safe_sql(sql: str) -> bool:
 def execute_sql(sql: str) -> List[Dict[str, Any]]:
     """执行 SQL 并返回结果 (普通模式)"""
     try:
-        import pymysql
+        import pymysql  # pyright: ignore[reportMissingModuleSource]
         
         connection = pymysql.connect(
             host=config.database.host,
@@ -331,6 +338,18 @@ def _sanitize_results(data: Any) -> Any:
     elif isinstance(data, (datetime, date)):
         return data.isoformat()
     return data
+
+
+def _is_clean_list_of_dicts(data: Any) -> bool:
+    if not isinstance(data, list):
+        return False
+    if not all(isinstance(item, dict) for item in data):
+        return False
+    try:
+        json.dumps(data)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def execute_with_connection(connection, sql: str) -> List[Dict[str, Any]]:

@@ -7,26 +7,48 @@ Text2SQL 工具模块
 - schema_cache: Schema/指标体系缓存
 """
 
-from tools.db_client import (
-    init_db_client,
-    load_data,
-    get_db_config
-)
+try:
+    from tools.db_client import (
+        init_db_client,
+        load_data,
+        get_db_config
+    )
 
-from tools.logger import (
-    init_logger,
-    log_trajectory,
-    generate_trajectory_id
-)
+    from tools.logger import (
+        init_logger,
+        log_trajectory,
+        generate_trajectory_id
+    )
 
-from tools.schema_cache import (
-    get_schema,
-    get_schema_text,
-    get_metrics,
-    get_metrics_text,
-    get_metrics_summary,
-    invalidate_cache,
-)
+    from tools.schema_cache import (
+        get_schema,
+        get_schema_text,
+        get_metrics,
+        get_metrics_text,
+        get_metrics_summary,
+        invalidate_cache,
+    )
+except ImportError:
+    from .db_client import (
+        init_db_client,
+        load_data,
+        get_db_config
+    )
+
+    from .logger import (
+        init_logger,
+        log_trajectory,
+        generate_trajectory_id
+    )
+
+    from .schema_cache import (
+        get_schema,
+        get_schema_text,
+        get_metrics,
+        get_metrics_text,
+        get_metrics_summary,
+        invalidate_cache,
+    )
 
 __all__ = [
     # db_client

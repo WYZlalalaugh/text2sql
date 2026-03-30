@@ -22,10 +22,10 @@ class CustomJSONEncoder(json.JSONEncoder):
             return o.isoformat()
         return super().default(o)
 
-from config import config
 from state import AgentState
-from graph import create_graph, process_clarification
-from main import create_llm_client, create_embedding_client, OllamaEmbeddingClient
+from graph import process_clarification
+from runtime_bootstrap import create_runtime_graph  # pyright: ignore[reportMissingImports]
+from tools.result_normalizer import normalize_canonical_tabular_result
 
 app = FastAPI(title="Text2SQL 智能体", version="1.0.0")
 
@@ -45,6 +45,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
     enable_suggestions: bool = False  # 新增推荐开关
+    workspace_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -55,28 +56,39 @@ class ChatResponse(BaseModel):
 
 
 # 会话存储
+DEFAULT_WORKSPACE_ID = "default"
 sessions = {}
 
 
-def get_or_create_session(session_id: str):
+def _normalize_workspace_id(workspace_id: Optional[str]) -> str:
+    return workspace_id or DEFAULT_WORKSPACE_ID
+
+
+def _build_session_key(session_id: str, workspace_id: Optional[str] = None) -> str:
+    normalized_workspace_id = _normalize_workspace_id(workspace_id)
+    return f"{normalized_workspace_id}:{session_id}"
+
+
+def get_or_create_session(session_id: str, workspace_id: Optional[str] = None):
     """获取或创建会话"""
-    if session_id not in sessions:
-        llm_client = create_llm_client()
-        embedding_client = OllamaEmbeddingClient()
-        
-        graph = create_graph(
-            llm_client=llm_client,
-            embedding_client=embedding_client
+    normalized_workspace_id = _normalize_workspace_id(workspace_id)
+    session_key = _build_session_key(session_id, normalized_workspace_id)
+
+    if session_key not in sessions:
+        graph, _, _ = create_runtime_graph(
+            enable_embedding_in_graph=True,
         )
-        
-        sessions[session_id] = {
+
+        sessions[session_key] = {
             "session_id": session_id,
+            "workspace_id": normalized_workspace_id,
+            "session_key": session_key,
             "graph": graph,
             "state": None,
             "waiting_for_clarification": False
         }
-    
-    return sessions[session_id]
+
+    return sessions[session_key]
 
 
 # 节点名称映射（用于前端显示）
@@ -96,6 +108,190 @@ NODE_DISPLAY_NAMES = {
 }
 
 
+def _build_step_data(
+    node_name: str,
+    node_output: dict[str, Any],
+    current_step: int,
+    *,
+    accumulated_state: AgentState,
+    use_accumulated_query_plan: bool = False,
+) -> dict[str, Any]:
+    """构建单个 step 事件数据，保持 SSE 载荷结构稳定"""
+    step_data = {
+        'type': 'step',
+        'step': current_step,
+        'node': node_name,
+        'title': NODE_DISPLAY_NAMES[node_name],
+        'status': 'complete',
+        'message': f"{NODE_DISPLAY_NAMES[node_name]}完成"
+    }
+
+    if node_name == "intent_classifier" and "intent_type" in node_output:
+        intent_val = node_output['intent_type']
+        intent_str = intent_val.value if hasattr(intent_val, 'value') else str(intent_val)
+        step_data['detail'] = f"识别意图: {intent_str}"
+    elif node_name == "query_planner":
+        plan = node_output.get('query_plan', {})
+        reasoning = node_output.get('reasoning_plan', '')
+        if use_accumulated_query_plan:
+            plan = node_output.get('query_plan') or accumulated_state.get('query_plan', {})
+            reasoning = node_output.get('reasoning_plan') or accumulated_state.get('reasoning_plan', '')
+
+        selected = plan.get('selected_metrics', []) if isinstance(plan, dict) else []
+        if not isinstance(selected, list):
+            selected = []
+        calc = plan.get('calculation_type', '') if isinstance(plan, dict) else ''
+
+        if selected:
+            step_data['detail'] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
+        elif calc:
+            step_data['detail'] = f"计算类型: {calc}"
+        else:
+            step_data['detail'] = "正在规划查询路径..."
+
+        if reasoning:
+            step_data['reasoning'] = reasoning
+    elif node_name == "sql_generator" and "generated_sql" in node_output:
+        step_data['detail'] = "SQL 语句已生成"
+        step_data['sql'] = node_output.get('generated_sql', '')
+    elif node_name == "sql_executor":
+        if "execution_result" in node_output:
+            results = node_output.get('execution_result', [])
+            if results:
+                step_data['detail'] = f"查询返回 {len(results)} 条结果"
+            else:
+                step_data['detail'] = "查询没返回结果"
+        elif "execution_error" in node_output:
+            step_data['detail'] = "执行出错，准备纠错"
+    elif node_name == "sql_corrector":
+        step_data['detail'] = "AI 正在对执行结果进行反思和修正..."
+        if "sql_reflection" in node_output:
+            step_data['reflection'] = node_output.get('sql_reflection', '')
+        if "generated_sql" in node_output:
+            step_data['sql'] = node_output.get('generated_sql', '')
+    elif node_name == "data_analyzer":
+        if "analysis_code" in node_output and node_output.get("analysis_code"):
+            step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
+            step_data['python_code'] = node_output.get("analysis_code", "")
+        elif "analysis_error" in node_output:
+            step_data['detail'] = "代码生成遇到问题"
+        else:
+            step_data['detail'] = "正在生成分析代码..."
+    elif node_name == "python_executor":
+        if "analysis_result" in node_output and node_output.get("analysis_result"):
+            result = node_output.get("analysis_result")
+            if isinstance(result, list):
+                step_data['detail'] = f"代码执行成功，返回 {len(result)} 条结果"
+            else:
+                step_data['detail'] = "代码执行成功"
+        elif "analysis_error" in node_output:
+            step_data['detail'] = f"执行出错: {node_output.get('analysis_error', '')[:50]}..."
+        else:
+            step_data['detail'] = "正在执行分析代码..."
+    elif node_name == "verifier":
+        if node_output.get("verification_passed"):
+            step_data['detail'] = "验证通过"
+        else:
+            feedback = node_output.get("verification_feedback", "")
+            step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
+
+    return step_data
+
+
+async def _stream_graph_events(
+    graph,
+    initial_state: AgentState,
+    session: dict[str, Any],
+    *,
+    start_message: str,
+    error_message_prefix: Optional[str] = None,
+    use_accumulated_query_plan: bool = False,
+    include_sql_reflection: bool = False,
+    update_waiting_for_clarification: bool = False,
+) -> AsyncGenerator[str, None]:
+    """复用的 Graph SSE 流式输出逻辑"""
+    try:
+        yield f"data: {json.dumps({'type': 'start', 'message': start_message}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.1)
+
+        current_step = 1
+        accumulated_state = initial_state.copy()
+
+        thread_id = session.get("current_thread_id") or session.get("session_key", "default_thread")
+        config_dict = {
+            "recursion_limit": 50,
+            "configurable": {"thread_id": thread_id}
+        }
+
+        for event in graph.stream(initial_state, config=config_dict):
+            for node_name, node_output in event.items():
+                if node_output:
+                    accumulated_state.update(node_output)
+
+                if node_name not in NODE_DISPLAY_NAMES:
+                    continue
+
+                step_data = _build_step_data(
+                    node_name,
+                    node_output or {},
+                    current_step,
+                    accumulated_state=accumulated_state,
+                    use_accumulated_query_plan=use_accumulated_query_plan,
+                )
+
+                yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
+                current_step += 1
+                await asyncio.sleep(0.1)
+
+        if accumulated_state:
+            session["state"] = accumulated_state
+            final_state = accumulated_state
+            need_clarification = final_state.get("ambiguity_detected", False)
+            if update_waiting_for_clarification:
+                session["waiting_for_clarification"] = need_clarification
+
+            asyncio.create_task(
+                record_log(
+                    final_state,
+                    workspace_id=final_state.get("workspace_id") or initial_state.get("workspace_id"),
+                )
+            )
+
+            final_data = final_state.get("analysis_result")
+            if not final_data:
+                final_data = final_state.get("execution_result")
+
+            result_data = {
+                'type': 'result',
+                'response': final_state.get("final_response", ""),
+                'sql': final_state.get("generated_sql"),
+                'python_code': final_state.get("analysis_code"),
+                'need_clarification': need_clarification,
+                'intent_type': str(final_state.get("intent_type", "")),
+                'data': final_data,
+                'suggested_questions': final_state.get("suggested_questions", [])
+            }
+            if include_sql_reflection:
+                result_data['sql_reflection'] = final_state.get("sql_reflection")
+
+            yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"流式执行错误: {error_detail}")
+        message = str(e)
+        if error_message_prefix:
+            message = f"{error_message_prefix}{message}"
+        error_data = {
+            'type': 'error',
+            'message': message
+        }
+        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+
+
 async def stream_graph_execution(graph, initial_state: AgentState, session: dict[str, Any]) -> AsyncGenerator[str, None]:
     """
     流式执行 LangGraph 并发送步骤更新
@@ -108,164 +304,22 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
     Yields:
         SSE 格式的事件数据
     """
-    try:
-        # 发送开始事件
-        yield f"data: {json.dumps({'type': 'start', 'message': '开始处理查询...'}, ensure_ascii=False)}\n\n"
-        await asyncio.sleep(0.1)
-        
-        # 使用 stream 方法执行图
-        current_step = 1
-        # 初始化累积状态，确保不丢失初始信息
-        accumulated_state = initial_state.copy()
-        
-        # 配置递归限制和会话 ID
-        # 使用动态生成的 thread_id，避免 checkpointer 恢复旧状态
-        thread_id = session.get("current_thread_id") or session.get("session_id", "default_thread")
-        config = {
-            "recursion_limit": 50,
-            "configurable": {"thread_id": thread_id}
-        }
-        
-        for event in graph.stream(initial_state, config=config):
-            # event 是 {node_name: node_output} 的字典
-            for node_name, node_output in event.items():
-                # 合并最新状态
-                if node_output:
-                    accumulated_state.update(node_output)
-                
-                if node_name in NODE_DISPLAY_NAMES:
-                    step_data = {
-                        'type': 'step',
-                        'step': current_step,
-                        'node': node_name,
-                        'title': NODE_DISPLAY_NAMES[node_name],
-                        'status': 'complete',
-                        'message': f"{NODE_DISPLAY_NAMES[node_name]}完成"
-                    }
-                    
-                    # 添加特定节点的详细信息
-                    if node_name == "intent_classifier" and "intent_type" in node_output:
-                        intent_val = node_output['intent_type']
-                        intent_str = intent_val.value if hasattr(intent_val, 'value') else str(intent_val)
-                        step_data['detail'] = f"识别意图: {intent_str}"
-                    elif node_name == "query_planner":
-                        # 提取 Query Plan 详情
-                        plan = node_output.get('query_plan', {})
-                        selected = plan.get('selected_metrics', [])
-                        calc = plan.get('calculation_type', '')
-                        
-                        if selected:
-                            step_data['detail'] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
-                        elif calc:
-                            step_data['detail'] = f"计算类型: {calc}"
-                        else:
-                            step_data['detail'] = "正在规划查询路径..."
-                        
-                        # 重要：同时抓取推理计划用于流式展示
-                        if "reasoning_plan" in node_output:
-                            step_data['reasoning'] = node_output.get('reasoning_plan', '')
-
-                    elif node_name == "sql_generator" and "generated_sql" in node_output:
-                        step_data['detail'] = "SQL 语句已生成"
-                        step_data['sql'] = node_output.get('generated_sql', '')
-                    elif node_name == "sql_executor":
-                        if "execution_result" in node_output:
-                            results = node_output.get('execution_result', [])
-                            if results:
-                                step_data['detail'] = f"查询返回 {len(results)} 条结果"
-                            else:
-                                step_data['detail'] = "查询没返回结果"
-                        elif "execution_error" in node_output:
-                            step_data['detail'] = "执行出错，准备纠错"
-                    elif node_name == "sql_corrector":
-                        step_data['detail'] = "AI 正在对执行结果进行反思和修正..."
-                        if "sql_reflection" in node_output:
-                            step_data['reflection'] = node_output.get('sql_reflection', '')
-                        if "generated_sql" in node_output:
-                            step_data['sql'] = node_output.get('generated_sql', '')
-                    
-                    # 新增: 处理 Code-Based 模式的节点
-                    elif node_name == "data_analyzer":
-                        if "analysis_code" in node_output and node_output.get("analysis_code"):
-                            code_preview = node_output.get("analysis_code", "")[:100]
-                            step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
-                            step_data['python_code'] = node_output.get("analysis_code", "")
-                        elif "analysis_error" in node_output:
-                            step_data['detail'] = "代码生成遇到问题"
-                        else:
-                            step_data['detail'] = "正在生成分析代码..."
-                    
-                    elif node_name == "python_executor":
-                        if "analysis_result" in node_output and node_output.get("analysis_result"):
-                            result = node_output.get("analysis_result")
-                            if isinstance(result, list):
-                                step_data['detail'] = f"代码执行成功，返回 {len(result)} 条结果"
-                            else:
-                                step_data['detail'] = "代码执行成功"
-                        elif "analysis_error" in node_output:
-                            step_data['detail'] = f"执行出错: {node_output.get('analysis_error', '')[:50]}..."
-                        else:
-                            step_data['detail'] = "正在执行分析代码..."
-                    
-                    elif node_name == "verifier":
-                        if node_output.get("verification_passed"):
-                            step_data['detail'] = "验证通过"
-                        else:
-                            feedback = node_output.get("verification_feedback", "")
-                            step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
-
-                    
-                    yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
-                    current_step += 1
-                    await asyncio.sleep(0.1)
-        
-        # 发送最终结果并更新会话状态
-        if accumulated_state:
-            # 更新会话状态（保存完整的累积状态）
-            session["state"] = accumulated_state
-            final_state = accumulated_state # 为了兼容下面的代码
-            need_clarification = final_state.get("ambiguity_detected", False)
-            session["waiting_for_clarification"] = need_clarification
-            
-            # 记录轨迹日志
-            asyncio.create_task(record_log(final_state))
-            
-            # 智能选择数据源: 优先使用 analysis_result (Code-Based), 其次 execution_result (SQL-Based)
-            final_data = final_state.get("analysis_result")
-            if not final_data:
-                final_data = final_state.get("execution_result")
-            
-            result_data = {
-                'type': 'result',
-                'response': final_state.get("final_response", ""),
-                'sql': final_state.get("generated_sql"),
-                'python_code': final_state.get("analysis_code"), # 新增: 返回 Python 代码
-                'need_clarification': need_clarification,
-                'intent_type': str(final_state.get("intent_type", "")),
-                'sql_reflection': final_state.get("sql_reflection"), 
-                'data': final_data,  # 统一数据字段
-                'suggested_questions': final_state.get("suggested_questions", [])
-            }
-            yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
-        
-        # 发送完成标记
-        yield "data: [DONE]\n\n"
-        
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        print(f"流式执行错误: {error_detail}")
-        error_data = {
-            'type': 'error',
-            'message': f'处理出错: {str(e)}'
-        }
-        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+    async for chunk in _stream_graph_events(
+        graph,
+        initial_state,
+        session,
+        start_message="开始处理查询...",
+        error_message_prefix="处理出错: ",
+        include_sql_reflection=True,
+        update_waiting_for_clarification=True,
+    ):
+        yield chunk
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     """流式聊天接口"""
-    session = get_or_create_session(request.session_id)
+    session = get_or_create_session(request.session_id, request.workspace_id)
     graph = session["graph"]
     
     if session["waiting_for_clarification"] and session["state"]:
@@ -281,7 +335,8 @@ async def chat_stream(request: ChatRequest):
                 {"role": "user", "content": request.message}
             ],
             "clarification_count": previous_state.get("clarification_count", 0),
-            "enable_suggestions": request.enable_suggestions # 传入推荐开关
+            "enable_suggestions": request.enable_suggestions,  # 传入推荐开关
+            "workspace_id": previous_state.get("workspace_id") or request.workspace_id or DEFAULT_WORKSPACE_ID,
             # "refined_intent": request.message, 
         }
         
@@ -289,131 +344,14 @@ async def chat_stream(request: ChatRequest):
         session["waiting_for_clarification"] = False
         
         async def clarification_stream():
-            try:
-                yield f"data: {json.dumps({'type': 'start', 'message': '处理澄清回复...'}, ensure_ascii=False)}\n\n"
-                
-                # 重新运行 Graph
-                current_step = 1
-                # 初始化累积状态
-                accumulated_state = new_state.copy()
-                
-                thread_id = session.get("session_id", "default_thread")
-                config_dict = {
-                    "recursion_limit": 50,
-                    "configurable": {"thread_id": thread_id}
-                }
-                
-                for event in graph.stream(new_state, config=config_dict):
-                    for node_name, node_output in event.items():
-                        # 合并最新状态
-                        if node_output:
-                            accumulated_state.update(node_output)
-                        
-                        if node_name in NODE_DISPLAY_NAMES:
-                            step_data = {
-                                'type': 'step',
-                                'step': current_step,
-                                'node': node_name,
-                                'title': NODE_DISPLAY_NAMES[node_name],
-                                'status': 'complete',
-                                'message': f"{NODE_DISPLAY_NAMES[node_name]}完成"
-                            }
-
-                            if node_name == "intent_classifier" and "intent_type" in node_output:
-                                intent_val = node_output['intent_type']
-                                intent_str = intent_val.value if hasattr(intent_val, 'value') else str(intent_val)
-                                step_data['detail'] = f"识别意图: {intent_str}"
-
-                            elif node_name == "query_planner":
-                                plan = node_output.get('query_plan') or accumulated_state.get('query_plan', {})
-                                selected = plan.get('selected_metrics', []) if isinstance(plan, dict) else []
-                                calc = plan.get('calculation_type', '') if isinstance(plan, dict) else ''
-
-                                if selected:
-                                    step_data['detail'] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
-                                elif calc:
-                                    step_data['detail'] = f"计算类型: {calc}"
-                                else:
-                                    step_data['detail'] = "正在规划查询路径..."
-
-                                reasoning = node_output.get('reasoning_plan') or accumulated_state.get('reasoning_plan', '')
-                                if reasoning:
-                                    step_data['reasoning'] = reasoning
-
-                            elif node_name == "sql_generator" and "generated_sql" in node_output:
-                                step_data['detail'] = "SQL 语句已生成"
-                                step_data['sql'] = node_output.get('generated_sql', '')
-
-                            elif node_name == "sql_corrector":
-                                step_data['detail'] = "AI 正在对执行结果进行反思和修正..."
-                                if "sql_reflection" in node_output:
-                                    step_data['reflection'] = node_output.get('sql_reflection', '')
-                                if "generated_sql" in node_output:
-                                    step_data['sql'] = node_output.get('generated_sql', '')
-
-                            elif node_name == "data_analyzer":
-                                if "analysis_code" in node_output and node_output.get("analysis_code"):
-                                    step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
-                                    step_data['python_code'] = node_output.get("analysis_code", "")
-                                elif "analysis_error" in node_output:
-                                    step_data['detail'] = "代码生成遇到问题"
-                                else:
-                                    step_data['detail'] = "正在生成分析代码..."
-
-                            elif node_name == "python_executor":
-                                if "analysis_result" in node_output and node_output.get("analysis_result"):
-                                    result = node_output.get("analysis_result")
-                                    if isinstance(result, list):
-                                        step_data['detail'] = f"代码执行成功，返回 {len(result)} 条结果"
-                                    else:
-                                        step_data['detail'] = "代码执行成功"
-                                elif "analysis_error" in node_output:
-                                    step_data['detail'] = f"执行出错: {node_output.get('analysis_error', '')[:50]}..."
-                                else:
-                                    step_data['detail'] = "正在执行分析代码..."
-
-                            elif node_name == "verifier":
-                                if node_output.get("verification_passed"):
-                                    step_data['detail'] = "验证通过"
-                                else:
-                                    feedback = node_output.get("verification_feedback", "")
-                                    step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
-
-                            yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
-                            current_step += 1
-                            await asyncio.sleep(0.1)
-                
-                # 更新会话状态
-                if accumulated_state:
-                    session["state"] = accumulated_state
-                    final_state = accumulated_state # 兼容下方变量名
-                    
-                    # 记录轨迹日志
-                    asyncio.create_task(record_log(final_state))
-                    
-                    # 智能选择数据源: 优先使用 analysis_result, 其次 execution_result
-                    final_data = final_state.get("analysis_result")
-                    if not final_data:
-                        final_data = final_state.get("execution_result")
-                    
-                    result_data = {
-                        'type': 'result',
-                        'response': final_state.get("final_response", ""),
-                        'sql': final_state.get("generated_sql"),
-                        'python_code': final_state.get("analysis_code"),  # 新增
-                        'need_clarification': final_state.get("ambiguity_detected", False),
-                        'intent_type': str(final_state.get("intent_type", "")),
-                        'data': final_data,  # 修正: 统一数据字段
-                        'suggested_questions': final_state.get("suggested_questions", [])
-                    }
-                    yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
-                
-                yield "data: [DONE]\n\n"
-                
-            except Exception as e:
-                import traceback
-                print(f"澄清处理错误: {traceback.format_exc()}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+            async for chunk in _stream_graph_events(
+                graph,
+                new_state,
+                session,
+                start_message="处理澄清回复...",
+                use_accumulated_query_plan=True,
+            ):
+                yield chunk
         
         return StreamingResponse(clarification_stream(), media_type="text/event-stream")
     else:
@@ -430,7 +368,8 @@ async def chat_stream(request: ChatRequest):
             "user_query": request.message,
             "messages": [("user", request.message)],
             "clarification_count": 0,
-            "enable_suggestions": request.enable_suggestions
+            "enable_suggestions": request.enable_suggestions,
+            "workspace_id": request.workspace_id or DEFAULT_WORKSPACE_ID,
         }
         
         return StreamingResponse(
@@ -439,10 +378,11 @@ async def chat_stream(request: ChatRequest):
         )
 
 
-async def record_log(state: AgentState):
+async def record_log(state: AgentState, workspace_id: Optional[str] = None):
     """异步记录轨迹日志"""
     try:
         from tools import log_trajectory, generate_trajectory_id
+        effective_workspace_id = workspace_id or state.get("workspace_id")
         
         # 确保有 ID
         tid = state.get("trajectory_id")
@@ -459,7 +399,8 @@ async def record_log(state: AgentState):
             verification_passed=state.get("verification_passed"),
             verification_feedback=state.get("verification_feedback"),
             ground_truth=None,  # 生产环境通常没有 GT
-            reward=None
+            reward=None,
+            workspace_id=effective_workspace_id,
         )
         # print(f"轨迹日志已记录: {tid}")
     except Exception as e:
@@ -470,26 +411,31 @@ async def record_log(state: AgentState):
 async def chat(request: ChatRequest):
     """非流式聊天接口（保留兼容性）"""
     try:
-        session = get_or_create_session(request.session_id)
+        session = get_or_create_session(request.session_id, request.workspace_id)
         graph = session["graph"]
         
         # 配置递归限制
-        config = {"recursion_limit": 50}
+        thread_id = session.get("current_thread_id") or session.get("session_key", "default_thread")
+        config: dict[str, object] = {
+            "recursion_limit": 50,
+            "configurable": {"thread_id": thread_id}
+        }
         
         if session["waiting_for_clarification"] and session["state"]:
-            result = process_clarification(graph, session["state"], request.message)
+            result = process_clarification(graph, session["state"], request.message, config=config)
         else:
             initial_state: AgentState = {
                 "user_query": request.message,
                 "messages": [],
-                "clarification_count": 0
+                "clarification_count": 0,
+                "workspace_id": request.workspace_id or DEFAULT_WORKSPACE_ID,
             }
             result = graph.invoke(initial_state, config=config)
         
         session["state"] = result
         
         # 记录日志
-        await record_log(result)
+        await record_log(result, workspace_id=request.workspace_id or result.get("workspace_id"))
         
         need_clarification = result.get("ambiguity_detected", False)
         if need_clarification:
@@ -514,10 +460,12 @@ async def chat(request: ChatRequest):
 
 class ChartRequest(BaseModel):
     session_id: str
+    workspace_id: Optional[str] = None
 
 
 class ReplayRequest(BaseModel):
     session_id: str
+    workspace_id: Optional[str] = None
     sql: Optional[str] = None
     python_code: Optional[str] = None
 
@@ -527,11 +475,28 @@ def _to_jsonable(data: Any) -> Any:
     return json.loads(json.dumps(data, ensure_ascii=False, cls=CustomJSONEncoder))
 
 
+def _normalize_tabular_payload(
+    *,
+    payload: Any = None,
+    state: Optional[dict[str, Any]] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """优先使用规范化结果；无法规范化时由调用方决定回退策略"""
+    try:
+        session_state = state or {}
+        return normalize_canonical_tabular_result(
+            payload=payload,
+            analysis_result=session_state.get("analysis_result"),
+            execution_result=session_state.get("execution_result"),
+        )
+    except Exception:
+        return None
+
+
 @app.post("/api/replay-data")
 async def replay_data(request: ReplayRequest):
     """根据 SQL 或 Python 代码回放数据"""
     try:
-        session = get_or_create_session(request.session_id)
+        session = get_or_create_session(request.session_id, request.workspace_id)
 
         # 优先回放 Python 代码
         if request.python_code and request.python_code.strip():
@@ -547,7 +512,9 @@ async def replay_data(request: ReplayRequest):
                 state["analysis_result"] = data
                 session["state"] = state
 
-            return {"data": _to_jsonable(data), "source": "python"}
+            normalized_data = _normalize_tabular_payload(payload=data, state=session.get("state"))
+            replay_data_payload = normalized_data if normalized_data is not None else data
+            return {"data": _to_jsonable(replay_data_payload), "source": "python"}
 
         # 其次回放 SQL
         if request.sql and request.sql.strip():
@@ -561,11 +528,15 @@ async def replay_data(request: ReplayRequest):
                 state["execution_result"] = data
                 session["state"] = state
 
-            return {"data": _to_jsonable(data), "source": "sql"}
+            normalized_data = _normalize_tabular_payload(payload=data, state=session.get("state"))
+            replay_data_payload = normalized_data if normalized_data is not None else data
+            return {"data": _to_jsonable(replay_data_payload), "source": "sql"}
 
         # 没提供回放源时，回退到当前会话数据
         state = session.get("state") or {}
-        data = state.get("analysis_result") or state.get("execution_result")
+        data = _normalize_tabular_payload(state=state)
+        if data is None:
+            data = state.get("analysis_result") or state.get("execution_result")
         return {"data": _to_jsonable(data), "source": "session"}
 
     except Exception as e:
@@ -578,17 +549,16 @@ async def replay_data(request: ReplayRequest):
 async def generate_chart(request: ChartRequest):
     """生成图表接口"""
     try:
-        session = get_or_create_session(request.session_id)
+        session = get_or_create_session(request.session_id, request.workspace_id)
         
         # 检查是否有状态
         if not session.get("state"):
             return {"chart_spec": None, "reasoning": "没有可用的查询结果"}
             
         state = session["state"]
-        
-        # 智能选择数据源: 优先 analysis_result, 其次 execution_result
-        chart_data = state.get("analysis_result") or state.get("execution_result")
-        
+
+        chart_data = _normalize_tabular_payload(state=state)
+
         if not chart_data:
             return {"chart_spec": None, "reasoning": "查询未返回数据，无法生成图表"}
         
@@ -618,10 +588,11 @@ async def generate_chart(request: ChartRequest):
 
 
 @app.post("/api/reset")
-async def reset_session(session_id: str = "default"):
+async def reset_session(session_id: str = "default", workspace_id: Optional[str] = None):
     """重置会话"""
-    if session_id in sessions:
-        del sessions[session_id]
+    session_key = _build_session_key(session_id, workspace_id)
+    if session_key in sessions:
+        del sessions[session_key]
     return {"message": "会话已重置"}
 
 

@@ -6,20 +6,29 @@
 2. 调用 LLM 生成包含 SQL 查询的 Python 代码
 3. 将代码存入 State，供 python_executor 节点执行
 
-注意: 
+注意:
 - 代码执行由 python_executor 节点负责
 - 本节点只负责代码生成
 - Code-Based 模式下不依赖 CSV 文件
 """
-from typing import Dict, Any, Optional
+from typing import Protocol, cast
 
-from state import AgentState, IntentType
+from state import AgentState
 from prompts.data_analyzer_prompt import build_data_analyzer_prompt
 from agents.python_executor import clean_code
 from tools.schema_cache import get_metrics
 
 
-def create_data_analyzer(llm_client):
+class AnalyzerLLM(Protocol):
+    def invoke(self, prompt: str) -> object:
+        ...
+
+
+class LLMResponseWithContent(Protocol):
+    content: str
+
+
+def create_data_analyzer(llm_client: AnalyzerLLM):
     """
     创建数据分析智能体
     
@@ -27,7 +36,7 @@ def create_data_analyzer(llm_client):
         llm_client: LLM 客户端, 用于生成 Python 代码
     """
     
-    def data_analyzer_node(state: AgentState) -> Dict[str, Any]:
+    def data_analyzer_node(state: AgentState) -> dict[str, object]:
         """
         数据分析代码生成节点 (Code-Based 模式)
         
@@ -42,12 +51,11 @@ def create_data_analyzer(llm_client):
         - analysis_error: 错误信息 (如有)
         """
         user_query = state.get("user_query", "")
-        schema_context = state.get("schema_context", "")
+        schema_context = state.get("schema_context") or ""
         query_plan = state.get("query_plan", {})
         selected_metrics = state.get("selected_metrics", [])
         verification_feedback = state.get("verification_feedback")
-        verification_count = state.get("verification_count", 0)
-        
+
         # 加载指标定义
         metrics_definitions = get_metrics()
         
@@ -64,7 +72,11 @@ def create_data_analyzer(llm_client):
         try:
             # 调用 LLM 生成 Python 代码
             response = llm_client.invoke(prompt)
-            generated_code = response.content if hasattr(response, 'content') else str(response)
+            if hasattr(response, "content"):
+                response_with_content = cast(LLMResponseWithContent, response)
+                generated_code = response_with_content.content
+            else:
+                generated_code = str(response)
             
             # 清理代码 (移除 markdown 标记)
             generated_code = clean_code(generated_code)
@@ -72,6 +84,7 @@ def create_data_analyzer(llm_client):
             if not generated_code.strip():
                 return {
                     "analysis_code": "",
+                    "analysis_result": None,
                     "analysis_error": "LLM 未能生成有效的分析代码",
                     "current_node": "data_analyzer"
                 }
@@ -80,13 +93,15 @@ def create_data_analyzer(llm_client):
             # 执行将由 python_executor 节点完成
             return {
                 "analysis_code": generated_code,
-                "analysis_error": None,  # 清除之前的错误
+                "analysis_result": None,
+                "analysis_error": None,
                 "current_node": "data_analyzer"
             }
             
         except Exception as e:
             return {
                 "analysis_code": "",
+                "analysis_result": None,
                 "analysis_error": f"代码生成失败: {str(e)}",
                 "current_node": "data_analyzer"
             }

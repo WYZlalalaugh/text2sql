@@ -11,7 +11,6 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from state import AgentState, IntentType
-from vector_store import get_vector_store
 from agents.intent_classifier import create_intent_classifier
 from agents.ambiguity_checker import create_ambiguity_checker
 from agents.query_planner import create_query_planner
@@ -21,14 +20,96 @@ from agents.sql_executor import create_sql_executor
 from agents.sql_corrector import create_sql_corrector
 from agents.response_generator import create_response_generator
 from agents.question_suggester import create_question_suggester
-from agents.data_analyzer import create_data_analyzer
 from agents.verifier import create_verifier
 from agents.python_executor import create_python_executor
+from agents.metric_loop_planner import create_metric_loop_planner
+from agents.metric_sql_generator import create_metric_sql_generator
+from agents.metric_executor import create_metric_executor
+from agents.metric_observer import create_metric_observer
 from prompts.sql_rules import DatabaseType
 
 
 # 临时文件目录 (用于清理)
 TEMP_DIR = os.path.join(os.path.dirname(__file__), "temp")
+
+
+class MetricDBConnectionManager:
+    """
+    Metric 循环专用数据库连接管理器
+    
+    在 metric 循环中共享同一个连接，避免临时表消失问题。
+    循环结束时统一清理临时表和连接。
+    """
+    
+    def __init__(self, db_config):
+        self.db_config = db_config
+        self._connection = None
+        self._tables_created = []
+    
+    def get_connection(self):
+        """获取或创建共享连接"""
+        if self._connection is None:
+            import mysql.connector
+            import logging
+            
+            # 验证数据库配置完整性
+            if self.db_config is None:
+                raise ValueError("数据库配置缺失: db_config 为 None")
+            
+            required_attrs = ['host', 'port', 'user', 'password', 'database']
+            for attr in required_attrs:
+                if not hasattr(self.db_config, attr) or getattr(self.db_config, attr) is None:
+                    raise ValueError(f"数据库配置缺失: db_config.{attr} 未配置")
+            
+            self._connection = mysql.connector.connect(
+                host=self.db_config.host,
+                port=self.db_config.port,
+                user=self.db_config.user,
+                password=self.db_config.password,
+                database=self.db_config.database,
+                charset=getattr(self.db_config, 'charset', 'utf8mb4'),
+            )
+        return self._connection
+    
+    def register_table(self, table_name: str):
+        """注册创建的表名，用于后续清理"""
+        if table_name not in self._tables_created:
+            self._tables_created.append(table_name)
+    
+    def cleanup(self):
+        """清理所有临时表并关闭连接"""
+        if self._connection is None:
+            return
+        
+        errors = []
+        try:
+            cursor = self._connection.cursor()
+            try:
+                for table_name in self._tables_created:
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS `{table_name}`")
+                    except Exception as e:
+                        errors.append(f"清理表 {table_name} 失败: {e}")
+                self._connection.commit()
+            except Exception as e:
+                errors.append(f"清理过程出错: {e}")
+            finally:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+        finally:
+            try:
+                self._connection.close()
+            except Exception as e:
+                errors.append(f"关闭连接失败: {e}")
+            finally:
+                self._connection = None
+                self._tables_created = []
+                
+        if errors:
+            import logging
+            logging.getLogger(__name__).warning(f"MetricDBConnectionManager 清理警告: {'; '.join(errors)}")
 
 
 def create_graph(llm_client, embedding_client=None, db_connection=None, sql_model_client=None, 
@@ -66,10 +147,26 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     response_generator = create_response_generator(llm_client)
     question_suggester = create_question_suggester(llm_client)
     
-    # 新增: 指标查询专用节点
-    data_analyzer = create_data_analyzer(llm_client)
     python_executor = create_python_executor()  # 代码执行节点
     verifier = create_verifier(llm_client)
+    
+    # 创建 Metric DB 连接管理器（用于共享连接）
+    from config import config as app_config
+    metric_db_manager = MetricDBConnectionManager(app_config.database)
+    
+    metric_loop_planner = create_metric_loop_planner(llm_client)
+    metric_sql_generator = create_metric_sql_generator(llm_client)
+    metric_executor = create_metric_executor(metric_db_manager)
+    metric_observer = create_metric_observer(llm_client)
+    
+    # 定义 Metric 清理节点（循环结束时清理连接和临时表）
+    def metric_cleanup_node(state: AgentState) -> Dict[str, Any]:
+        """Metric 循环清理节点 - 清理共享连接和临时表"""
+        try:
+            metric_db_manager.cleanup()
+        except Exception as e:
+            print(f"DEBUG: Metric cleanup failed: {e}")
+        return {"current_node": "metric_cleanup"}
     
     # 定义澄清返回节点
     def clarification_return_node(state: AgentState) -> Dict[str, Any]:
@@ -104,9 +201,25 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             "verification_count": 0,
             "max_correction_attempts": max_correction_attempts,
             "max_verification_attempts": 2,
+            "generated_sql": "",
+            "execution_result": None,
+            "execution_error": None,
+            "analysis_result": None,
+            "analysis_error": None,
+            "loop_iteration": 0,
+            "retry_counters": {},
+            "planner_observations": [],
+            "metric_plan_nodes": [],
+            "step_results": {},
+            "execution_history": [],
+            "loop_status": "planning",
+            "execution_path": state.get("execution_path"),
+            "legacy_fallback_triggered": state.get("legacy_fallback_triggered", False),
+            "legacy_fallback_reason": state.get("legacy_fallback_reason"),
+            "legacy_fallback_count": state.get("legacy_fallback_count", 0),
             "current_node": "init"
         }
-    
+
     # 创建 StateGraph
     workflow = StateGraph(AgentState)
     
@@ -120,9 +233,13 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     workflow.add_node("sql_generator", sql_generator)
     workflow.add_node("sql_executor", sql_executor)
     workflow.add_node("sql_corrector", sql_corrector)
-    workflow.add_node("data_analyzer", data_analyzer)     # 代码生成
     workflow.add_node("python_executor", python_executor) # 代码执行
     workflow.add_node("verifier", verifier)               # 验证
+    workflow.add_node("metric_loop_planner", metric_loop_planner)
+    workflow.add_node("metric_sql_generator", metric_sql_generator)
+    workflow.add_node("metric_executor", metric_executor)
+    workflow.add_node("metric_observer", metric_observer)
+    workflow.add_node("metric_cleanup", metric_cleanup_node)  # 新增清理节点
     workflow.add_node("response_generator", response_generator)
     workflow.add_node("question_suggester", question_suggester)
     workflow.add_node("cleanup", cleanup_node)         # 新增
@@ -188,11 +305,11 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         }
     )
     
-    # ContextAssembler 后的条件路由 (根据意图类型分流)
-    def route_after_context_assembler(state: AgentState) -> Literal["sql_generator", "data_analyzer"]:
+    # ContextAssembler 后的条件路由 (Task 13: 指标查询默认进入迭代式循环)
+    def route_after_context_assembler(state: AgentState) -> Literal["sql_generator", "metric_loop_planner"]:
         """
         Context Assembler 后路由:
-        - METRIC_QUERY -> data_analyzer (Code-Based 模式, 跳过 SQL 生成/执行)
+        - METRIC_QUERY -> metric_loop_planner (新的迭代式循环)
         - VALUE_QUERY -> sql_generator (传统 SQL 执行模式)
         """
         intent_type = state.get("intent_type")
@@ -200,7 +317,8 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
                           intent_type == "metric_query")
         
         if is_metric_query:
-            return "data_analyzer"
+            # Task 13: 所有指标查询都走新的迭代式循环
+            return "metric_loop_planner"
         return "sql_generator"
     
     workflow.add_conditional_edges(
@@ -208,10 +326,54 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         route_after_context_assembler,
         {
             "sql_generator": "sql_generator",
-            "data_analyzer": "data_analyzer"
+            "metric_loop_planner": "metric_loop_planner"
         }
     )
+
+    def route_metric_loop(state: AgentState) -> Literal["metric_sql_generator", "metric_cleanup"]:
+        loop_status = state.get("loop_status")
+        if loop_status in ["completed", "failed"]:
+            return "metric_cleanup"  # 先清理再返回响应
+        return "metric_sql_generator"
+
+    workflow.add_conditional_edges(
+        "metric_loop_planner",
+        route_metric_loop,
+        {"metric_sql_generator": "metric_sql_generator", "metric_cleanup": "metric_cleanup"}
+    )
+    workflow.add_edge("metric_sql_generator", "metric_executor")
+    workflow.add_edge("metric_executor", "metric_observer")
     
+    # Metric Observer 后的条件路由（Oracle 建议：根据 step_status 强制门控）
+    def route_after_metric_observer(state: AgentState) -> Literal["metric_loop_planner", "metric_cleanup"]:
+        """
+        Metric Observer 后路由（关键！Oracle 建议的状态门控）:
+        - step_status == "succeeded": 继续到 planner 进行下一步规划
+        - step_status in ["failed_execution", "failed_validation"]: 返回 planner 进行重试/调整
+        - loop_status in ["completed", "failed"]: 到 cleanup 结束循环
+        
+        注意：失败的步骤绝不会继续到下游，确保状态一致性。
+        """
+        loop_status = state.get("loop_status")
+        step_status = state.get("step_status")
+        
+        # 循环结束状态优先
+        if loop_status in ["completed", "failed"]:
+            return "metric_cleanup"
+        
+        # 步骤成功或任何失败都返回 planner（由 planner 决定重试或继续）
+        # succeeded -> planner 会继续下一步
+        # failed_execution/failed_validation -> planner 会重试当前步骤
+        return "metric_loop_planner"
+    
+    workflow.add_conditional_edges(
+        "metric_observer",
+        route_after_metric_observer,
+        {"metric_loop_planner": "metric_loop_planner", "metric_cleanup": "metric_cleanup"}
+    )
+    
+    workflow.add_edge("metric_cleanup", "response_generator")  # 清理后到响应生成
+
     # SQLGenerator -> SQLExecutor (仅 VALUE_QUERY 会走这条路)
     workflow.add_edge("sql_generator", "sql_executor")
     
@@ -222,7 +384,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         - 有错误 -> sql_corrector
         - 成功 -> response_generator
         
-        注意: METRIC_QUERY 已在 context_assembler 后直接走 data_analyzer，
+        注意: METRIC_QUERY 已在 context_assembler 后直接走 metric_loop_planner，
               不会经过 sql_executor。
         """
         execution_error = state.get("execution_error")
@@ -238,7 +400,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             return "response_generator"
         
         # 场景 2: 空结果 - 尝试纠错
-        if execution_result is not None and len(execution_result) == 0:
+        if isinstance(execution_result, list) and len(execution_result) == 0:
             if correction_count < 2:
                 return "sql_corrector"
         
@@ -257,36 +419,22 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     # SQL 纠错后重新执行
     workflow.add_edge("sql_corrector", "sql_executor")
     
-    # 数据分析 -> 代码执行 -> 验证
-    workflow.add_edge("data_analyzer", "python_executor")
     workflow.add_edge("python_executor", "verifier")
     
     # 验证后的条件路由
-    def route_after_verification(state: AgentState) -> Literal["data_analyzer", "response_generator"]:
+    def route_after_verification(state: AgentState) -> Literal["response_generator"]:
         """
         验证后路由:
         - 验证通过 -> response_generator
-        - 验证失败且未达上限 -> data_analyzer (重新生成分析代码)
+        - 验证失败且未达上限 -> response_generator（当前仅保留最终输出）
         - 验证失败且达上限 -> response_generator (带错误信息)
         """
-        verification_passed = state.get("verification_passed", False)
-        verification_count = state.get("verification_count", 0)
-        max_attempts = state.get("max_verification_attempts", 2)
-        
-        if verification_passed:
-            return "response_generator"
-        
-        # 未通过验证
-        if verification_count < max_attempts:
-            return "data_analyzer"
-        
         return "response_generator"
     
     workflow.add_conditional_edges(
         "verifier",
         route_after_verification,
         {
-            "data_analyzer": "data_analyzer",
             "response_generator": "response_generator"
         }
     )
@@ -329,7 +477,12 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     return app
 
 
-def process_clarification(app, state: AgentState, user_response: str) -> AgentState:
+def process_clarification(
+    app,
+    state: AgentState,
+    user_response: str,
+    config: dict[str, object] | None = None,
+) -> AgentState:
     """
     处理用户的澄清回复
     
@@ -348,7 +501,7 @@ def process_clarification(app, state: AgentState, user_response: str) -> AgentSt
         {"role": "user", "content": user_response}
     ]
     
-    result = app.invoke(new_state)
+    result = app.invoke(new_state, config=config)
     return result
 
 

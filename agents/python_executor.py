@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false
 """
 Python 代码执行器节点 - 在受限环境中安全执行 Python 代码
 
@@ -41,9 +42,9 @@ def create_python_executor():
         - analysis_result: 执行结果
         - analysis_error: 执行错误 (如有)
         """
-        analysis_code = state.get("analysis_code", "")
-        data_file_path = state.get("data_file_path", "")
-        
+        analysis_code = state.get("analysis_code") or ""
+        data_file_path = state.get("data_file_path") or ""
+
         if not analysis_code:
             return {
                 "analysis_result": None,
@@ -60,18 +61,27 @@ def create_python_executor():
             }
         
         # 执行代码
-        result, error = execute_python_code(analysis_code, data_file_path)
+        result, error = execute_python_code(str(analysis_code), str(data_file_path))
+
+        if error is None and result is not None:
+            from tools.result_normalizer import ResultNormalizerError, normalize_and_serialize
+
+            try:
+                result = normalize_and_serialize(result)
+            except ResultNormalizerError as exc:
+                result = None
+                error = f"结果标准化失败: {exc}"
         
         return {
             "analysis_result": result,
             "analysis_error": error,
             "current_node": "python_executor"
         }
-    
+
     return python_executor_node
 
 
-def execute_python_code(code: str, data_file_path: str = None) -> Tuple[Any, Optional[str]]:
+def execute_python_code(code: str, data_file_path: str = "") -> Tuple[Any, Optional[str]]:
     """
     在受限环境中执行 Python 代码
     

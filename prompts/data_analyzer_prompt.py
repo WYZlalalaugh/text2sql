@@ -5,6 +5,8 @@
 使用 load_data(sql) 函数直接从数据库获取数据。
 """
 
+from typing import Any
+
 # 数据分析代码生成系统提示词
 DATA_ANALYZER_SYSTEM_PROMPT = """你是一个专业的数据分析工程师。你的任务是根据查询计划和数据库结构，编写完整的 Python 代码来获取数据并计算指标。
 
@@ -98,10 +100,10 @@ DATA_ANALYZER_PROMPT_TEMPLATE = """{system_prompt}
 def build_data_analyzer_prompt(
     user_query: str,
     schema_context: str = "",
-    query_plan: dict = None,
-    verification_feedback: str = None,
-    selected_metrics: list = None,
-    metrics_definitions: dict = None
+    query_plan: dict[str, Any] | None = None,
+    verification_feedback: str | None = None,
+    selected_metrics: list[str] | None = None,
+    metrics_definitions: dict[str, Any] | None = None
 ) -> str:
     """
     构建数据分析代码生成 Prompt (Code-Based 模式)
@@ -120,34 +122,65 @@ def build_data_analyzer_prompt(
     # 格式化查询计划上下文
     query_plan_context = ""
     if query_plan:
-        reasoning_steps = query_plan.get("reasoning_steps", [])
-        if reasoning_steps:
-            query_plan_context = "推理步骤:\n"
-            for i, step in enumerate(reasoning_steps, 1):
-                query_plan_context += f"{i}. {step}\n"
-        
-        # 添加筛选条件
-        filters = query_plan.get("filters", {})
-        if filters:
-            query_plan_context += "\n筛选条件:\n"
-            for key, value in filters.items():
-                if value:
-                    query_plan_context += f"- {key}: {value}\n"
-        
-        # 添加计算类型
-        calc_type = query_plan.get("calculation_type", "")
-        if calc_type:
-            query_plan_context += f"\n计算类型: {calc_type}\n"
-        
-        # 添加目标字段
-        target_fields = query_plan.get("target_fields", [])
-        if target_fields:
-            query_plan_context += f"\n目标字段: {', '.join(target_fields)}\n"
-        
-        # 添加涉及的表
-        involved_tables = query_plan.get("involved_tables", [])
-        if involved_tables:
-            query_plan_context += f"涉及表: {', '.join(involved_tables)}\n"
+        if "steps" in query_plan and "summary_goal" in query_plan and "limits" in query_plan:
+            query_plan_context = f"目标摘要: {query_plan.get('summary_goal', '')}\n"
+            limits = query_plan.get("limits", {})
+            query_plan_context += (
+                "执行限制: "
+                f"max_steps={limits.get('max_steps', '')}, "
+                f"max_replans={limits.get('max_replans', '')}\n"
+            )
+            query_plan_context += (
+                "请把 steps[*].type、inputs、outputs、description 视为唯一执行契约；"
+                "按这些字段落实查询与转换，不要回退到 reasoning_steps 风格。\n"
+            )
+            artifacts = query_plan.get("artifacts", [])
+            if artifacts:
+                query_plan_context += f"产物: {', '.join(str(item) for item in artifacts)}\n"
+
+            steps = query_plan.get("steps", [])
+            if steps:
+                query_plan_context += "\n执行步骤:\n"
+                for i, step in enumerate(steps, 1):
+                    query_plan_context += (
+                        f"{i}. [{step.get('step_id', '')}] {step.get('type', '')}: "
+                        f"{step.get('description', '')}\n"
+                    )
+                    inputs = step.get("inputs", [])
+                    outputs = step.get("outputs", [])
+                    if inputs:
+                        query_plan_context += f"   - 输入: {', '.join(str(item) for item in inputs)}\n"
+                    if outputs:
+                        query_plan_context += f"   - 输出: {', '.join(str(item) for item in outputs)}\n"
+        else:
+            reasoning_steps = query_plan.get("reasoning_steps", [])
+            if reasoning_steps:
+                query_plan_context = "推理步骤:\n"
+                for i, step in enumerate(reasoning_steps, 1):
+                    query_plan_context += f"{i}. {step}\n"
+
+            # 添加筛选条件
+            filters = query_plan.get("filters", {})
+            if filters:
+                query_plan_context += "\n筛选条件:\n"
+                for key, value in filters.items():
+                    if value:
+                        query_plan_context += f"- {key}: {value}\n"
+
+            # 添加计算类型
+            calc_type = query_plan.get("calculation_type", "")
+            if calc_type:
+                query_plan_context += f"\n计算类型: {calc_type}\n"
+
+            # 添加目标字段
+            target_fields = query_plan.get("target_fields", [])
+            if target_fields:
+                query_plan_context += f"\n目标字段: {', '.join(target_fields)}\n"
+
+            # 添加涉及的表
+            involved_tables = query_plan.get("involved_tables", [])
+            if involved_tables:
+                query_plan_context += f"涉及表: {', '.join(involved_tables)}\n"
     
     if not query_plan_context:
         query_plan_context = "(无查询计划，请根据用户查询和 Schema 自行设计)"

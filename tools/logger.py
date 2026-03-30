@@ -13,10 +13,10 @@ from datetime import datetime
 from typing import Any, Optional, Dict
 
 # 日志目录路径
-_log_dir = None
+_log_dir: Optional[str] = None
 
 
-def init_logger(log_dir: str = None):
+def init_logger(log_dir: Optional[str] = None):
     """
     初始化日志记录器
     
@@ -45,7 +45,8 @@ def log_trajectory(
     verification_passed: Optional[bool] = None,
     verification_feedback: Optional[str] = None,
     ground_truth: Optional[Any] = None,
-    reward: Optional[float] = None
+    reward: Optional[float] = None,
+    workspace_id: Optional[str] = None,
 ):
     """
     记录一条轨迹数据
@@ -66,6 +67,7 @@ def log_trajectory(
     
     if _log_dir is None:
         init_logger()
+    assert _log_dir is not None
     
     # 构建轨迹记录
     record = {
@@ -79,7 +81,8 @@ def log_trajectory(
         "verification_passed": verification_passed,
         "verification_feedback": verification_feedback,
         "ground_truth": _ensure_serializable(ground_truth),
-        "reward": reward
+        "reward": reward,
+        "workspace_id": workspace_id,
     }
     
     # 写入 JSONL 文件 (按日期分文件)

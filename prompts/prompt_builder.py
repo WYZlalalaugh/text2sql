@@ -17,7 +17,7 @@ class PromptBuilder:
     def __init__(self, domain: DomainConfig):
         self.domain = domain
     
-    def _format_metric_context(self, matched_metrics: Optional[List], full_context: Optional[str] = None) -> str:
+    def _format_metric_context(self, matched_metrics: Optional[List[Any]], full_context: Optional[str] = None) -> str:
         """格式化指标上下文"""
         if full_context:
             return f"### 完整指标体系 ###\n```json\n{full_context}\n```"
@@ -48,12 +48,12 @@ class PromptBuilder:
     def build_sql_generation_prompt(
         self,
         query: str,
-        schema: dict,
-        matched_metrics: list = None,
-        sql_samples: SQLSampleLibrary = None,
-        instructions: List[str] = None,
-        reasoning_plan: str = None,
-        full_metrics_context: str = None, 
+        schema: Dict[str, Any],
+        matched_metrics: Optional[List[Any]] = None,
+        sql_samples: Optional[SQLSampleLibrary] = None,
+        instructions: Optional[List[str]] = None,
+        reasoning_plan: Optional[str] = None,
+        full_metrics_context: Optional[str] = None,
     ) -> str:
         """
         构建 SQL 生成提示词
@@ -75,7 +75,7 @@ class PromptBuilder:
             instructions_text = "### USER INSTRUCTIONS ###\n"
             for i, inst in enumerate(instructions, 1):
                 instructions_text += f"{i}. {inst}\n"
-        
+
         # 推理计划
         reasoning_text = ""
         if reasoning_plan:
@@ -115,7 +115,7 @@ class PromptBuilder:
         self,
         query: str,
         chat_history: str = "无",
-        full_metrics_context: str = None,
+        full_metrics_context: Optional[str] = None,
     ) -> str:
         """
         构建意图分类提示词
@@ -146,9 +146,9 @@ class PromptBuilder:
     def build_ambiguity_check_prompt(
         self,
         query: str,
-        matched_metrics: list = None,
+        matched_metrics: Optional[List[Any]] = None,
         conversation_history: str = "",
-        full_metrics_context: str = None,
+        full_metrics_context: Optional[str] = None,
     ) -> str:
         """
         构建歧义检测提示词

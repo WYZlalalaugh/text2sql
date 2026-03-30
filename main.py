@@ -1,74 +1,12 @@
 """
 Text2SQL 智能体系统入口
 """
-import sys
-from typing import Optional
+from typing import Optional, cast
 
-from config import config
 from state import AgentState
-from graph import create_graph, process_clarification
-
-
-def create_llm_client():
-    """创建 LLM 客户端"""
-    try:
-        from langchain_openai import ChatOpenAI
-        
-        return ChatOpenAI(
-            base_url=config.llm.api_base,
-            api_key=config.llm.api_key,
-            model=config.llm.model_name,
-            temperature=config.llm.temperature,
-            max_tokens=config.llm.max_tokens
-        )
-    except ImportError:
-        print("警告: langchain_openai 未安装，使用简易 LLM 客户端")
-        return SimpleLLMClient()
-
-
-def create_embedding_client():
-    """创建 Embedding 客户端"""
-    # 使用自定义 Ollama Embedding 客户端
-    return OllamaEmbeddingClient()
-
-
-class OllamaEmbeddingClient:
-    """Ollama Embedding 客户端"""
-    
-    def __init__(self):
-        import requests
-        self.base_url = config.embedding.api_base.rstrip('/v1').rstrip('/')
-        self.model = config.embedding.model_name
-        self.session = requests.Session()
-    
-    def embed_query(self, text: str) -> list:
-        """生成文本嵌入向量"""
-        import requests
-        
-        url = f"http://localhost:11434/api/embeddings"
-        payload = {
-            "model": self.model,
-            "prompt": text
-        }
-        
-        try:
-            response = self.session.post(url, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            return result.get("embedding", [])
-        except Exception as e:
-            print(f"Embedding 生成失败: {e}")
-            return []
-
-
-class SimpleLLMClient:
-    """简易 LLM 客户端（用于测试）"""
-    
-    def invoke(self, prompt: str):
-        """模拟 LLM 调用"""
-        class Response:
-            content = '{"intent_type": "chitchat", "analysis": "测试模式", "identified_metrics": []}'
-        return Response()
+from graph import process_clarification
+from runtime import SimpleLLMClient
+from runtime_bootstrap import create_runtime_graph  # pyright: ignore[reportMissingImports]
 
 
 class Text2SQLAgent:
@@ -83,17 +21,14 @@ class Text2SQLAgent:
             embedding_client: Embedding 客户端
             db_connection: 数据库连接
         """
-        self.llm_client = llm_client or create_llm_client()
-        self.embedding_client = embedding_client or create_embedding_client()
-        self.db_connection = db_connection
-        
-        # 创建 Graph
-        self.app = create_graph(
-            llm_client=self.llm_client,
-            embedding_client=None,  # 废弃：不再使用向量检索
-            db_connection=self.db_connection
+        self.app, self.llm_client, self.embedding_client = create_runtime_graph(
+            llm_client=llm_client,
+            embedding_client=embedding_client,
+            db_connection=db_connection,
+            enable_embedding_in_graph=False,
         )
-        
+        self.db_connection = db_connection
+
         # 当前状态（用于多轮对话）
         self.current_state: Optional[AgentState] = None
         self.waiting_for_clarification = False
@@ -122,13 +57,14 @@ class Text2SQLAgent:
                 "messages": [],
                 "clarification_count": 0
             }
-            self.current_state = self.app.invoke(initial_state)
+            self.current_state = cast(AgentState, self.app.invoke(initial_state))
         
         # 检查是否需要澄清
-        final_response = self.current_state.get("final_response", "")
-        clarification_question = self.current_state.get("clarification_question", "")
+        state = self.current_state or {}
+        final_response = state.get("final_response", "")
+        clarification_question = state.get("clarification_question", "")
         
-        if self.current_state.get("ambiguity_detected", False) and clarification_question:
+        if state.get("ambiguity_detected", False) and clarification_question:
             self.waiting_for_clarification = True
             return clarification_question
         else:
