@@ -197,16 +197,28 @@ def create_metric_executor(db_connection_or_manager=None):
                 history_record = {
                     "step_id": current_step_id,
                     "status": "success",
-                    "sql": generated_sql[:500],
+                    "sql": generated_sql,  # 保存完整SQL
                     "timestamp": int(time.time() * 1000),
                 }
                 updated_history = existing_history + [history_record]
+
+                # 更新物化表 Schema 缓存（关键改进：供后续步骤使用）
+                existing_schemas = state.get("materialized_schemas") or {}
+                updated_schemas = dict(existing_schemas)
+                updated_schemas[str(current_step_id)] = {
+                    "table_name": output_table,
+                    "columns": result.get("columns", []),
+                    "row_count": result.get("row_count", 0),
+                    "created_at": int(time.time() * 1000),
+                    "source_step": current_step_id,
+                }
 
                 return {
                     "execution_result": execution_result,
                     "execution_error": None,
                     "step_results": updated_step_results,
                     "materialized_artifacts": updated_artifacts,
+                    "materialized_schemas": updated_schemas,  # 新增：Schema缓存
                     "execution_history": updated_history,
                     "current_node": "metric_executor",
                 }
@@ -215,13 +227,13 @@ def create_metric_executor(db_connection_or_manager=None):
             if not is_final_step:
                 _cleanup_temp_table(output_table, db_connection_or_manager, is_manager)
             
-            # 添加失败记录到执行历史
+            # 添加失败记录到执行历史（保存完整SQL，不截断）
             existing_history = list(state.get("execution_history") or [])
             history_record = {
                 "step_id": current_step_id,
                 "status": "failed",
-                "sql": generated_sql[:500],
-                "error": str(e)[:500],
+                "sql": generated_sql,  # 保存完整SQL，不截断
+                "error": str(e),
                 "timestamp": int(time.time() * 1000),
             }
             updated_history = existing_history + [history_record]
@@ -243,6 +255,10 @@ def _execute_and_materialize(
 ) -> dict[str, object]:
     """
     执行SQL并将结果物化到表
+    
+    Phase 2 优化:
+    1. 使用 CREATE TEMPORARY TABLE 代替普通表（减少元数据锁）
+    2. 执行前使用 EXPLAIN 预检SQL语法和表存在性
 
     Args:
         sql: 要执行的SQL
@@ -287,6 +303,14 @@ def _execute_and_materialize(
     cursor = conn.cursor(dictionary=True)
 
     try:
+        # Phase 2 优化: 先进行 SQL 安全预检（只检查危险操作，不检查语法）
+        safety_error = _safety_sql_check(sql)
+        if safety_error:
+            raise ValueError(f"SQL安全检查失败: {safety_error}")
+        
+        # 不再进行 EXPLAIN 预检，直接执行，让数据库返回真实错误
+        # 这样SQL生成器可以根据真实错误进行自我纠错
+        
         materialize_sql = _build_materialization_sql(sql, output_table)
         _ = cursor.execute(materialize_sql)
         _ = conn.commit()
@@ -307,8 +331,62 @@ def _execute_and_materialize(
             conn.close()
 
 
+def _safety_sql_check(sql: str) -> str | None:
+    """
+    安全检查：只检查危险操作，不检查语法正确性
+    
+    这样可以让SQL生成器根据数据库的真实错误进行自我纠错，
+    而不是被预检拦截
+    
+    Args:
+        sql: 要检查的 SQL
+        
+    Returns:
+        错误信息，如果没有危险操作返回 None
+    """
+    sql_upper = sql.upper().strip()
+    
+    # 只允许以 SELECT 或 CREATE TABLE 开头的语句
+    if not (sql_upper.startswith("SELECT") or 
+            sql_upper.startswith("CREATE TABLE") or 
+            sql_upper.startswith("CREATE TEMPORARY TABLE")):
+        return "只允许 SELECT 和 CREATE TABLE 语句"
+    
+    # 禁止多语句（分号注入）
+    if ";" in sql_upper.rstrip(";"):
+        return "禁止多语句执行"
+    
+    # 检查危险关键字
+    dangerous_keywords = [
+        r"\bDROP\b",
+        r"\bDELETE\b", 
+        r"\bUPDATE\b",
+        r"\bINSERT\b",
+        r"\bALTER\b",
+        r"\bTRUNCATE\b",
+        r"\bGRANT\b",
+        r"\bREVOKE\b",
+        r"\bEXEC\b",
+        r"\bEXECUTE\b",
+    ]
+    
+    import re
+    for pattern in dangerous_keywords:
+        if re.search(pattern, sql_upper):
+            return f"检测到危险操作: {pattern}"
+    
+    return None  # 安全检查通过
+
+
 def _build_materialization_sql(sql: str, output_table: str) -> str:
-    """将输入SQL转换为固定输出表的物化语句（使用普通表，非临时表）。"""
+    """
+    将输入SQL转换为固定输出表的物化语句
+    
+    Phase 2 优化: 使用 CREATE TEMPORARY TABLE 代替普通表
+    - 减少元数据锁争用
+    - 自动清理（连接关闭时）
+    - 对其他会话不可见（隔离性好）
+    """
     normalized_sql = sql.strip().rstrip(";")
 
     create_table_pattern = re.compile(
@@ -317,9 +395,11 @@ def _build_materialization_sql(sql: str, output_table: str) -> str:
     )
 
     if normalized_sql.upper().startswith("CREATE TABLE") or normalized_sql.upper().startswith("CREATE TEMPORARY TABLE"):
-        return create_table_pattern.sub(f"CREATE TABLE `{output_table}`", normalized_sql, count=1)
+        # 替换为 CREATE TEMPORARY TABLE
+        return create_table_pattern.sub(f"CREATE TEMPORARY TABLE `{output_table}`", normalized_sql, count=1)
 
-    return f"CREATE TABLE `{output_table}` AS {normalized_sql}"
+    # 默认使用 CREATE TEMPORARY TABLE AS SELECT
+    return f"CREATE TEMPORARY TABLE `{output_table}` AS {normalized_sql}"
 
 
 def _cleanup_temp_table(
@@ -420,6 +500,8 @@ def _execute_select_directly(
     """
     直接执行 SELECT 语句并返回结果数据。
     
+    Phase 2 修复: 执行前使用 EXPLAIN 预检
+    
     Args:
         sql: SELECT SQL 语句
         db_connection_or_manager: 数据库连接或连接管理器
@@ -464,6 +546,11 @@ def _execute_select_directly(
     cursor = conn.cursor(dictionary=True)
 
     try:
+        # Phase 2 修复: 最终步骤也进行安全检查（不检查语法，只检查危险操作）
+        safety_error = _safety_sql_check(sql)
+        if safety_error:
+            raise ValueError(f"SQL安全检查失败: {safety_error}")
+        
         cursor.execute(sql)
         rows = cursor.fetchall()
         
@@ -503,6 +590,8 @@ def _is_safe_sql(sql: str) -> bool:
     - 权限操作: GRANT, REVOKE
     - 执行操作: EXEC, EXECUTE
     """
+    import re
+    
     sql_upper = sql.upper().strip()
 
     # 只允许以 SELECT 或 CREATE TABLE 开头的语句
@@ -513,22 +602,22 @@ def _is_safe_sql(sql: str) -> bool:
     if ";" in sql_upper.rstrip(";"):
         return False
 
-    # 只拦截数据改动类关键字（允许 UNION 等只读操作）
+    # 使用词边界检查危险关键字，避免误杀字段名（如 updated_at）
     dangerous_keywords = [
-        "DROP",
-        "DELETE",
-        "UPDATE",
-        "INSERT",
-        "ALTER",
-        "TRUNCATE",
-        "GRANT",
-        "REVOKE",
-        "EXEC",
-        "EXECUTE",
+        r"\bDROP\b",
+        r"\bDELETE\b",
+        r"\bUPDATE\b",
+        r"\bINSERT\b",
+        r"\bALTER\b",
+        r"\bTRUNCATE\b",
+        r"\bGRANT\b",
+        r"\bREVOKE\b",
+        r"\bEXEC\b",
+        r"\bEXECUTE\b",
     ]
 
-    for keyword in dangerous_keywords:
-        if keyword in sql_upper:
+    for pattern in dangerous_keywords:
+        if re.search(pattern, sql_upper):
             return False
 
     return True

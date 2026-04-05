@@ -139,7 +139,22 @@ const app = createApp({
 
             if (isMessageObject) {
                 const msg = msgOrData;
-                if (!hasResultData(msg) && hasReplaySource(msg)) {
+                // 如果数据被截断，先尝试回放获取完整数据
+                if (msg.isTruncated) {
+                    msg.isReplayLoading = true;
+                    try {
+                        const replayData = await fetchReplayData(msg);
+                        msg.sqlResult = replayData;
+                        msg.isTruncated = false; // 标记为已获取完整数据
+                        data = replayData;
+                        ElMessage.success(`已加载全部 ${msg.totalCount || replayData.length} 条数据`);
+                    } catch (e) {
+                        ElMessage.error(`加载完整数据失败: ${e.message || e}，显示前100条`);
+                        data = msg.sqlResult; // 回退到已有数据
+                    } finally {
+                        msg.isReplayLoading = false;
+                    }
+                } else if (!hasResultData(msg) && hasReplaySource(msg)) {
                     msg.isReplayLoading = true;
                     try {
                         const replayData = await fetchReplayData(msg);
@@ -863,6 +878,8 @@ const app = createApp({
 
                                     if (Object.prototype.hasOwnProperty.call(event, 'data')) {
                                         tempMessage.sqlResult = event.data;
+                                        tempMessage.totalCount = event.total_count || 0;
+                                        tempMessage.isTruncated = event.is_truncated || false;
                                     }
 
                                     // 如果有推荐问题，更新全局推荐列表

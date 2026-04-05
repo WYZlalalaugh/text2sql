@@ -7,6 +7,7 @@ LangGraph 图编排 - 定义智能体工作流
 """
 from typing import Literal, Dict, Any
 import os
+import time
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -195,29 +196,104 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     
     # 定义初始化节点 (设置默认值)
     def init_node(state: AgentState) -> Dict[str, Any]:
-        """初始化状态默认值"""
+        """初始化状态默认值 - 重置所有请求级字段避免状态污染"""
+        
+        # 获取会话级持久字段（需要保留的）
+        workspace_id = state.get("workspace_id")
+        session_id = state.get("session_id")
+        user_id = state.get("user_id")
+        messages = state.get("messages", [])
+        incoming_clarification = state.get("clarification_response")
+        incoming_clarification_count = state.get("clarification_count", 0)
+        preserve_clarification = bool(incoming_clarification)
+
+        if isinstance(incoming_clarification_count, int):
+            clarification_count = incoming_clarification_count if preserve_clarification else 0
+        else:
+            clarification_count = 0
+        
+        # 返回全新状态，只保留会话级字段
         return {
+            # === 会话级持久字段（跨请求保留）===
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "user_id": user_id,
+            "messages": messages,
+            
+            # === 用户输入（新请求）===
+            "user_query": state.get("user_query", ""),
+            "clarification_response": incoming_clarification if preserve_clarification else None,
+            
+            # === 意图和分类（新请求）===
+            "intent_type": None,
+            "intent_confidence": 0.0,
+            
+            # === 歧义检测（新请求）===
+            "ambiguity_detected": False,
+            "ambiguity_details": [],
+            "clarification_question": None,
+            "refined_intent": None,
+            "clarification_count": clarification_count,
+            
+            # === 规划相关（新请求）===
+            "query_plan": {},
+            "reasoning_plan": "",
+            "selected_metrics": [],
+            "target_fields": [],
+            "planning_error": None,
+            "metrics_context": None,
+            
+            # === 上下文组装（新请求）===
+            "schema_context": None,
+            "assembled_prompt": None,
+            "context_assembled": False,
+            
+            # === Metric 循环相关（新请求）===
+            "metric_plan_nodes": [],
+            "current_step_id": None,
+            "step_results": {},
+            "step_status": None,
+            "step_status_map": {},
+            "planner_observations": [],
+            "execution_history": [],
+            "materialized_artifacts": {},
+            "retry_counters": {},
+            "loop_iteration": 0,
+            "loop_status": "planning",
+            "loop_decision": None,
+            
+            # === SQL 生成和执行（新请求）===
+            "generated_sql": "",
+            "execution_result": None,
+            "execution_error": None,
+            
+            # === 纠错和验证（新请求）===
             "correction_count": 0,
             "verification_count": 0,
             "max_correction_attempts": max_correction_attempts,
             "max_verification_attempts": 2,
-            "generated_sql": "",
-            "execution_result": None,
-            "execution_error": None,
             "analysis_result": None,
             "analysis_error": None,
-            "loop_iteration": 0,
-            "retry_counters": {},
-            "planner_observations": [],
-            "metric_plan_nodes": [],
-            "step_results": {},
-            "execution_history": [],
-            "loop_status": "planning",
+            "analysis_code": None,
+            
+            # === 最终响应（新请求）===
+            "final_response": None,
+            "recommended_questions": [],
+            
+            # === 遗留兼容字段（新请求）===
             "execution_path": state.get("execution_path"),
-            "legacy_fallback_triggered": state.get("legacy_fallback_triggered", False),
-            "legacy_fallback_reason": state.get("legacy_fallback_reason"),
-            "legacy_fallback_count": state.get("legacy_fallback_count", 0),
-            "current_node": "init"
+            "legacy_fallback_triggered": False,
+            "legacy_fallback_reason": None,
+            "legacy_fallback_count": 0,
+            
+            # === 配置和开关（新请求）===
+            "enable_suggestions": state.get("enable_suggestions", False),
+            "enable_streaming": state.get("enable_streaming", False),
+            "chart_config": state.get("chart_config"),
+            
+            # === 元数据 ===
+            "current_node": "init",
+            "start_time": int(time.time() * 1000),
         }
 
     # 创建 StateGraph
@@ -274,10 +350,18 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     )
     
     # 歧义检测后的条件路由
-    def route_after_ambiguity(state: AgentState) -> Literal["clarification_return", "query_planner"]:
+    def route_after_ambiguity(state: AgentState) -> Literal["clarification_return", "query_planner", "metric_loop_planner"]:
         ambiguity_detected = state.get("ambiguity_detected", False)
         if ambiguity_detected:
             return "clarification_return"
+
+        intent_type = state.get("intent_type")
+        is_metric_query = (intent_type == IntentType.METRIC_QUERY or
+                          intent_type == "metric_query")
+        # 关键调整: METRIC_QUERY 不再经过 query_planner，直接进入 metric_loop_planner
+        if is_metric_query:
+            return "metric_loop_planner"
+
         return "query_planner"
     
     workflow.add_conditional_edges(
@@ -285,15 +369,24 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         route_after_ambiguity,
         {
             "clarification_return": "clarification_return",
-            "query_planner": "query_planner"
+            "query_planner": "query_planner",
+            "metric_loop_planner": "metric_loop_planner",
         }
     )
     
     # QueryPlanner -> 条件路由 (规划失败时短路到 response_generator)
     def route_after_planner(state: AgentState) -> Literal["context_assembler", "response_generator"]:
+        """
+        Query Planner 后路由:
+        - 规划失败 -> response_generator (错误响应)
+        - VALUE_QUERY -> context_assembler (传统路径)
+
+        关键约束: METRIC_QUERY 不会进入该节点（已在 ambiguity_checker 后直达 metric_loop_planner）
+        """
         planning_error = state.get("planning_error")
         if planning_error:
             return "response_generator"
+
         return "context_assembler"
     
     workflow.add_conditional_edges(
@@ -305,30 +398,8 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         }
     )
     
-    # ContextAssembler 后的条件路由 (Task 13: 指标查询默认进入迭代式循环)
-    def route_after_context_assembler(state: AgentState) -> Literal["sql_generator", "metric_loop_planner"]:
-        """
-        Context Assembler 后路由:
-        - METRIC_QUERY -> metric_loop_planner (新的迭代式循环)
-        - VALUE_QUERY -> sql_generator (传统 SQL 执行模式)
-        """
-        intent_type = state.get("intent_type")
-        is_metric_query = (intent_type == IntentType.METRIC_QUERY or 
-                          intent_type == "metric_query")
-        
-        if is_metric_query:
-            # Task 13: 所有指标查询都走新的迭代式循环
-            return "metric_loop_planner"
-        return "sql_generator"
-    
-    workflow.add_conditional_edges(
-        "context_assembler",
-        route_after_context_assembler,
-        {
-            "sql_generator": "sql_generator",
-            "metric_loop_planner": "metric_loop_planner"
-        }
-    )
+    # ContextAssembler 仅用于 VALUE_QUERY，固定进入 sql_generator
+    workflow.add_edge("context_assembler", "sql_generator")
 
     def route_metric_loop(state: AgentState) -> Literal["metric_sql_generator", "metric_cleanup"]:
         loop_status = state.get("loop_status")
@@ -341,7 +412,30 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         route_metric_loop,
         {"metric_sql_generator": "metric_sql_generator", "metric_cleanup": "metric_cleanup"}
     )
-    workflow.add_edge("metric_sql_generator", "metric_executor")
+    
+    # Metric SQL Generator 后的条件路由（关键修复：SQL生成错误时不进入executor）
+    def route_after_metric_sql_generator(state: AgentState) -> Literal["metric_executor", "metric_observer"]:
+        """
+        Metric SQL Generator 后路由:
+        - SQL生成成功 -> metric_executor（执行SQL）
+        - SQL生成失败 -> metric_observer（记录错误并触发重试）
+        
+        关键修复：避免生成错误覆盖执行错误，保持错误链完整
+        """
+        execution_error = state.get("execution_error")
+        generated_sql = state.get("generated_sql")
+        
+        # 如果SQL生成返回错误，或没有生成SQL，直接进入observer记录失败
+        if execution_error or not generated_sql:
+            return "metric_observer"
+        
+        return "metric_executor"
+    
+    workflow.add_conditional_edges(
+        "metric_sql_generator",
+        route_after_metric_sql_generator,
+        {"metric_executor": "metric_executor", "metric_observer": "metric_observer"}
+    )
     workflow.add_edge("metric_executor", "metric_observer")
     
     # Metric Observer 后的条件路由（Oracle 建议：根据 step_status 强制门控）
@@ -384,7 +478,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
         - 有错误 -> sql_corrector
         - 成功 -> response_generator
         
-        注意: METRIC_QUERY 已在 context_assembler 后直接走 metric_loop_planner，
+        注意: METRIC_QUERY 在 ambiguity_checker 后直接进入 metric_loop_planner，
               不会经过 sql_executor。
         """
         execution_error = state.get("execution_error")

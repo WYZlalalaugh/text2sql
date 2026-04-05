@@ -16,7 +16,7 @@
         rel="stylesheet">
 
     <!-- 自定义样式 -->
-    <link rel="stylesheet" href="style.css?v=20">
+    <link rel="stylesheet" href="style.css?v=37">
 </head>
 
 <body>
@@ -27,6 +27,10 @@
     <!-- SVG Sprite Definitions -->
     <svg style="display: none;">
         <defs>
+            <symbol id="icon-ai-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l2.4 7.6 7.6 2.4-7.6 2.4L12 22l-2.4-7.6-7.6-2.4 7.6-2.4L12 2z"></path>
+            </symbol>
             <symbol id="icon-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
@@ -124,7 +128,7 @@
             <div class="nav-left">
                 <div class="logo-wrapper">
                     <svg class="icon logo-icon">
-                        <use xlink:href="#icon-bot"></use>
+                        <use xlink:href="#icon-ai-star"></use>
                     </svg>
                     <span>Text2SQL 助手</span>
                 </div>
@@ -211,7 +215,7 @@
                         <div class="welcome-header">
                             <div class="card-icon welcome-emblem">
                                 <svg class="icon welcome-icon-lg">
-                                    <use xlink:href="#icon-bot"></use>
+                                    <use xlink:href="#icon-ai-star"></use>
                                 </svg>
                             </div>
                             <h2>我想查询什么数据？</h2>
@@ -255,7 +259,7 @@
                                     <use xlink:href="#icon-user"></use>
                                 </svg>
                                 <svg class="icon" v-else>
-                                    <use xlink:href="#icon-bot"></use>
+                                    <use xlink:href="#icon-ai-star"></use>
                                 </svg>
                             </div>
 
@@ -392,7 +396,8 @@
                                             <svg class="icon" style="margin-right:4px">
                                                 <use xlink:href="#icon-table"></use>
                                             </svg>
-                                            {{ hasResultData(msg) ? '查看数据' : '查看数据（回放）' }}
+                                            {{ msg.isTruncated ? `查看全部数据(${msg.totalCount}条)` : (hasResultData(msg) ?
+                                            '查看数据' : '查看数据（回放）') }}
                                         </button>
 
                                         <button class="action-btn" v-if="msg.chartSpec"
@@ -495,7 +500,7 @@
         </el-dialog>
 
         <!-- 图表展示弹窗 -->
-        <el-dialog v-model="chartDialogVisible" title="相关数据图表" width="75%" align-center class="chart-dialog">
+        <el-dialog v-model="chartDialogVisible" title="相关数据图表" width="92%" align-center class="chart-dialog">
             <div id="dialog-chart-container" class="chart-container"></div>
             <div class="chart-reasoning" v-if="currentChartReasoning">
                 <div class="chart-reasoning-title">图表解读：</div>
@@ -505,6 +510,57 @@
     </div>
 
     <!-- 引入 Vue 3 和 Element Plus JS -->
+    <script>
+        // Spatial 3D Point-Tracking Logic (Direct DOM Transform overrides)
+        document.addEventListener('mousemove', (e) => {
+            const cards = document.querySelectorAll('.quick-card, .clarification-panel, .welcome-emblem');
+            cards.forEach(card => {
+                const rect = card.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                const isHovering = x >= 0 && x <= rect.width && y >= 0 && y <= rect.height;
+                if (isHovering) {
+                    const centerX = rect.width / 2;
+                    const centerY = rect.height / 2;
+                    const rotateX = -((y - centerY) / centerY) * 12; // Native inverted Y
+                    const rotateY = ((x - centerX) / centerX) * 12;
+
+                    card.style.transform = `perspective(1000px) translateY(-5px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.03, 1.03, 1.03)`;
+                    card.style.transition = `none`; // Remove transition during dynamic tracking
+                    card.style.zIndex = `10`;
+                    card.style.boxShadow = `0 30px 60px rgba(0,0,0,0.1), 0 0 0 1px inset rgba(255,255,255,0.4)`;
+                } else {
+                    card.style.transform = ``;
+                    card.style.transition = `transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)`;
+                    card.style.zIndex = ``;
+                    card.style.boxShadow = ``;
+                }
+            });
+        });
+
+        // Global listener for syntax copy button injection
+        document.addEventListener('mouseover', (e) => {
+            const pre = e.target.closest('.response-text pre') || e.target.closest('.sql-code pre');
+            if (pre && !pre.querySelector('.copy-code-btn')) {
+                const btn = document.createElement('button');
+                btn.className = 'copy-code-btn';
+                btn.innerHTML = 'Copy code';
+                btn.onclick = () => {
+                    const codeBlock = pre.querySelector('code');
+                    const textToCopy = codeBlock ? codeBlock.innerText : pre.innerText;
+                    navigator.clipboard.writeText(textToCopy);
+                    btn.innerHTML = 'Copied ✓';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.innerHTML = 'Copy code';
+                        btn.classList.remove('copied');
+                    }, 2000);
+                };
+                pre.appendChild(btn);
+            }
+        });
+    </script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

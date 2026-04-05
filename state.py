@@ -190,3 +190,7 @@ class AgentState(TypedDict, total=False):
     # 步骤结果映射
     step_results: dict[str, dict[str, object]] | None
 
+    # 物化表的 Schema 缓存 - 用于后续步骤引用上游表结构
+    # key: step_id, value: {table_name, columns: [{name, type, ...}]}
+    materialized_schemas: dict[str, dict[str, object]] | None
+

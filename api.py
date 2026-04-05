@@ -69,6 +69,16 @@ def _build_session_key(session_id: str, workspace_id: Optional[str] = None) -> s
     return f"{normalized_workspace_id}:{session_id}"
 
 
+def _serialize_intent_type(intent_type: Any) -> str:
+    """Normalize intent_type into a stable string value for API contracts."""
+    if intent_type is None:
+        return ""
+    value = getattr(intent_type, "value", None)
+    if isinstance(value, str):
+        return value
+    return str(intent_type)
+
+
 def get_or_create_session(session_id: str, workspace_id: Optional[str] = None):
     """获取或创建会话"""
     normalized_workspace_id = _normalize_workspace_id(workspace_id)
@@ -101,6 +111,11 @@ NODE_DISPLAY_NAMES = {
     "sql_generator": "SQL生成",
     "sql_executor": "SQL执行",
     "sql_corrector": "SQL纠错",
+    "metric_loop_planner": "指标循环规划",
+    "metric_sql_generator": "指标SQL生成",
+    "metric_executor": "指标SQL执行",
+    "metric_observer": "指标执行观察",
+    "metric_cleanup": "指标资源清理",
     "data_analyzer": "代码生成",      # 新增
     "python_executor": "代码执行",    # 新增
     "verifier": "结果验证",           # 新增
@@ -128,7 +143,7 @@ def _build_step_data(
 
     if node_name == "intent_classifier" and "intent_type" in node_output:
         intent_val = node_output['intent_type']
-        intent_str = intent_val.value if hasattr(intent_val, 'value') else str(intent_val)
+        intent_str = _serialize_intent_type(intent_val)
         step_data['detail'] = f"识别意图: {intent_str}"
     elif node_name == "query_planner":
         plan = node_output.get('query_plan', {})
@@ -194,6 +209,59 @@ def _build_step_data(
         else:
             feedback = node_output.get("verification_feedback", "")
             step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
+    elif node_name == "metric_loop_planner":
+        decision = node_output.get("loop_decision", {})
+        if isinstance(decision, dict):
+            decision_type = str(decision.get("decision", "") or "")
+            reason = str(decision.get("reason", "") or "")
+            next_step_id = str(decision.get("next_step_id", "") or "")
+            if next_step_id:
+                step_data["detail"] = f"决策: {decision_type}，下一步 {next_step_id}"
+            elif reason:
+                step_data["detail"] = f"决策: {decision_type}，{reason[:60]}"
+            elif decision_type:
+                step_data["detail"] = f"决策: {decision_type}"
+            else:
+                step_data["detail"] = "正在更新指标循环计划..."
+        else:
+            step_data["detail"] = "正在更新指标循环计划..."
+    elif node_name == "metric_sql_generator":
+        if node_output.get("execution_error"):
+            err = str(node_output.get("execution_error", ""))
+            step_data["detail"] = f"SQL 生成失败: {err[:60]}"
+        elif node_output.get("generated_sql"):
+            step_data["detail"] = "指标 SQL 已生成"
+            step_data["sql"] = node_output.get("generated_sql", "")
+        else:
+            step_data["detail"] = "正在生成指标 SQL..."
+    elif node_name == "metric_executor":
+        if node_output.get("execution_error"):
+            err = str(node_output.get("execution_error", ""))
+            step_data["detail"] = f"执行失败: {err[:60]}"
+        elif isinstance(node_output.get("execution_result"), list):
+            rows = node_output.get("execution_result") or []
+            step_data["detail"] = f"执行完成，返回 {len(rows)} 条结果"
+        elif isinstance(node_output.get("execution_result"), dict):
+            exec_result = node_output.get("execution_result") or {}
+            if isinstance(exec_result, dict):
+                row_count = exec_result.get("row_count")
+                table_name = exec_result.get("output_table")
+                if row_count is not None and table_name:
+                    step_data["detail"] = f"执行完成，写入中间表 {table_name}（{row_count} 行）"
+                elif row_count is not None:
+                    step_data["detail"] = f"执行完成，{row_count} 行"
+                else:
+                    step_data["detail"] = "指标 SQL 执行完成"
+        else:
+            step_data["detail"] = "正在执行指标 SQL..."
+    elif node_name == "metric_observer":
+        step_status = str(node_output.get("step_status", "") or "")
+        if step_status:
+            step_data["detail"] = f"当前步骤状态: {step_status}"
+        else:
+            step_data["detail"] = "正在评估执行结果..."
+    elif node_name == "metric_cleanup":
+        step_data["detail"] = "已完成临时表与连接清理"
 
     return step_data
 
@@ -261,14 +329,20 @@ async def _stream_graph_events(
             if not final_data:
                 final_data = final_state.get("execution_result")
 
+            # 获取数据元信息（用于前端分页展示）
+            total_count = final_state.get("total_count", 0)
+            is_truncated = final_state.get("is_truncated", False)
+
             result_data = {
                 'type': 'result',
                 'response': final_state.get("final_response", ""),
                 'sql': final_state.get("generated_sql"),
                 'python_code': final_state.get("analysis_code"),
                 'need_clarification': need_clarification,
-                'intent_type': str(final_state.get("intent_type", "")),
+                'intent_type': _serialize_intent_type(final_state.get("intent_type")),
                 'data': final_data,
+                'total_count': total_count,
+                'is_truncated': is_truncated,
                 'suggested_questions': final_state.get("suggested_questions", [])
             }
             if include_sql_reflection:
@@ -379,7 +453,7 @@ async def chat_stream(request: ChatRequest):
 
 
 async def record_log(state: AgentState, workspace_id: Optional[str] = None):
-    """异步记录轨迹日志"""
+    """异步记录轨迹日志 - 支持 VALUE 和 METRIC 两种路径"""
     try:
         from tools import log_trajectory, generate_trajectory_id
         effective_workspace_id = workspace_id or state.get("workspace_id")
@@ -388,20 +462,58 @@ async def record_log(state: AgentState, workspace_id: Optional[str] = None):
         tid = state.get("trajectory_id")
         if not tid:
             tid = generate_trajectory_id()
-            
-        log_trajectory(
-            trajectory_id=tid,
-            user_query=state.get("user_query") or "",
-            query_plan=state.get("query_plan"),
-            analysis_code=state.get("analysis_code"),
-            analysis_result=state.get("analysis_result"),
-            analysis_error=state.get("analysis_error"),
-            verification_passed=state.get("verification_passed"),
-            verification_feedback=state.get("verification_feedback"),
-            ground_truth=None,  # 生产环境通常没有 GT
-            reward=None,
-            workspace_id=effective_workspace_id,
-        )
+        
+        # 获取意图类型
+        intent_type = state.get("intent_type", "")
+        intent_type_str = str(intent_type)
+        # 处理多种可能的格式: "metric_query", "METRIC_QUERY", "IntentType.METRIC_QUERY"
+        is_metric = any(keyword in intent_type_str for keyword in 
+                        ["metric_query", "METRIC_QUERY", "Metric"])
+        
+        # 根据路径提取不同的字段
+        if is_metric:
+            # METRIC 路径: 新的迭代式循环使用不同的字段
+            log_trajectory(
+                trajectory_id=tid,
+                user_query=state.get("user_query") or "",
+                intent_type=str(intent_type),
+                query_plan=state.get("query_plan"),
+                # METRIC 路径字段 - 新的迭代式循环
+                analysis_code=None,  # 新的循环不使用 analysis_code
+                analysis_result=None,  # 新的循环不使用 analysis_result
+                analysis_error=None,
+                verification_passed=None,  # 新的循环不使用 verifier
+                verification_feedback=None,
+                # 循环执行字段 - 这是新的迭代式循环的主要字段
+                metric_plan_nodes=state.get("metric_plan_nodes"),
+                execution_history=state.get("execution_history"),
+                step_results=state.get("step_results"),
+                loop_status=state.get("loop_status"),
+                metric_final_result=state.get("execution_result"),
+                # 通用
+                final_response=state.get("final_response"),
+                ground_truth=None,
+                reward=None,
+                workspace_id=effective_workspace_id,
+            )
+        else:
+            # VALUE 路径: 记录 SQL 和执行结果
+            log_trajectory(
+                trajectory_id=tid,
+                user_query=state.get("user_query") or "",
+                intent_type=str(intent_type),
+                query_plan=state.get("query_plan"),
+                # VALUE 路径字段
+                generated_sql=state.get("generated_sql"),
+                execution_result=state.get("execution_result"),
+                execution_error=state.get("execution_error"),
+                sql_reflection=state.get("sql_reflection"),
+                # 通用
+                final_response=state.get("final_response"),
+                ground_truth=None,
+                reward=None,
+                workspace_id=effective_workspace_id,
+            )
         # print(f"轨迹日志已记录: {tid}")
     except Exception as e:
         print(f"日志记录失败: {e}")
@@ -449,7 +561,7 @@ async def chat(request: ChatRequest):
             response=response_text,
             need_clarification=need_clarification,
             sql=result.get("generated_sql"),
-            intent_type=str(result.get("intent_type", ""))
+            intent_type=_serialize_intent_type(result.get("intent_type"))
         )
         
     except Exception as e:

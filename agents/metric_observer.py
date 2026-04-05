@@ -412,13 +412,14 @@ def _create_failure_observation(
 ) -> Observation:
     """创建失败观察记录"""
 
-    error_lower = error.lower()
+    normalized_error = _normalize_error_message(error)
+    error_lower = normalized_error.lower()
 
     # 错误分类
     if any(kw in error_lower for kw in ["syntax", "parse", "invalid_function"]):
         category = "SYNTAX_ERROR"
         suggestion = "使用更简单的SQL语法，避免复杂函数"
-    elif any(kw in error_lower for kw in ["column", "not exist", "unknown", "field"]):
+    elif any(kw in error_lower for kw in ["column", "not exist", "unknown column", "field", "1054"]):
         category = "SCHEMA_MISMATCH"
         suggestion = "检查列名是否与Schema匹配"
     elif any(kw in error_lower for kw in ["timeout", "slow", "lock"]):
@@ -436,9 +437,10 @@ def _create_failure_observation(
         "observation_type": "failed",
         "sql_executed": sql[:500] if sql else "",
         "execution_duration_ms": 0,
-        "error_summary": error[:300],
+        "error_summary": normalized_error[:300],
         "error_category": category,
         "fix_suggestion": suggestion,
+        "raw_error": error[:500],
         "data_summary": None,
         "quality_issues": [],
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -528,6 +530,25 @@ def _to_int(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_error_message(error: str) -> str:
+    """统一清洗错误信息，尽量保留关键语义并移除冗余前缀。"""
+    text = str(error).strip()
+    if not text:
+        return "未知执行错误"
+
+    # 常见包装前缀清理
+    prefixes = ["执行失败:", "sql execution failed:", "error:"]
+    lowered = text.lower()
+    for prefix in prefixes:
+        if lowered.startswith(prefix.lower()):
+            text = text[len(prefix):].strip()
+            break
+
+    # 仅取首行，避免噪音堆叠
+    first_line = text.splitlines()[0].strip() if text.splitlines() else text
+    return first_line or "未知执行错误"
 
 
 __all__ = ["create_metric_observer"]

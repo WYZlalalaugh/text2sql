@@ -28,7 +28,7 @@ text2sql/
 |------|----------|-------|
 | CLI behavior | `main.py` | `Text2SQLAgent`, reset flow, clarification loop |
 | API behavior | `api.py` | `/api/chat`, `/api/chat/stream`, `/api/chart`, in-memory sessions |
-| Workflow routing | `graph.py` | VALUE_QUERY and METRIC_QUERY split after `context_assembler` |
+| Workflow routing | `graph.py` | VALUE_QUERY goes through SQL path; METRIC_QUERY enters iterative metric loop after ambiguity check |
 | Shared state fields | `state.py` | `AgentState` has conversation, SQL, analysis, verification fields |
 | Config + paths | `config.py` | `.env` defaults, schema path, metrics path |
 | Metric retrieval | `vector_store.py` | FAISS if installed, keyword fallback otherwise |
@@ -54,7 +54,7 @@ text2sql/
 2. `create_graph()` wires LangGraph nodes from `agents/`.
 3. `intent_classifier` routes to direct response, SQL path, or ambiguity path.
 4. VALUE_QUERY path: `query_planner -> context_assembler -> sql_generator -> sql_executor -> response_generator`.
-5. METRIC_QUERY path: `ambiguity_checker -> query_planner -> context_assembler -> data_analyzer -> python_executor -> verifier -> response_generator`.
+5. METRIC_QUERY path: `ambiguity_checker -> metric_loop_planner -> metric_sql_generator -> metric_executor -> metric_observer -> ... -> metric_cleanup -> response_generator`.
 6. Optional `question_suggester` runs when `enable_suggestions` is true.
 
 ## CONVENTIONS
@@ -74,7 +74,7 @@ text2sql/
 ## UNIQUE STYLES
 - Mixed architecture: root-level orchestration plus domain folders, not a package-first layout.
 - LangGraph state is broad and mutation-heavy; many nodes communicate through optional fields instead of dedicated classes.
-- METRIC_QUERY uses generated Python analysis code and verifier loop; VALUE_QUERY stays SQL-first.
+- METRIC_QUERY uses iterative plan-execute-observe SQL loop with step-level retries; VALUE_QUERY stays SQL-first.
 - API streams human-readable step names through SSE for the frontend.
 
 ## COMMANDS

@@ -94,8 +94,16 @@ def create_metric_loop_planner(llm_client: SupportsInvoke | None = None):
                 "current_node": "metric_loop_planner",
             }
 
+        # 获取步骤状态（优先使用 step_status，而不是 observation_type）
+        step_status = state.get("step_status")
+        step_status_map = state.get("step_status_map") or {}
+        # 如果 step_status_map 中有当前步骤的状态，使用它
+        if obs_step_id in step_status_map:
+            step_status = step_status_map[obs_step_id]
+
         # ===== 阶段3: 处理失败 - 调用LLM调整计划 =====
-        if obs_type == "failed":
+        # 关键修复：基于 step_status 判断失败，而不仅仅是 observation_type
+        if obs_type == "failed" or step_status in ("failed_execution", "failed_validation"):
             current_retries = retry_counters.get(obs_step_id, 0)
 
             if current_retries >= MAX_RETRIES:
@@ -121,14 +129,8 @@ def create_metric_loop_planner(llm_client: SupportsInvoke | None = None):
             }
 
         # ===== 阶段4: 成功 - 继续下一步 =====
-        current_idx = -1
-        for i, node in enumerate(plan_nodes):
-            if node.get("step_id") == obs_step_id:
-                current_idx = i
-                break
-
-        if current_idx >= 0 and current_idx < len(plan_nodes) - 1:
-            next_step = plan_nodes[current_idx + 1].get("step_id")
+        next_step = _select_next_runnable_step(plan_nodes, state, obs_step_id)
+        if next_step:
             return {
                 "current_step_id": next_step,
                 "loop_decision": {"decision": "continue", "reason": "继续下一步", "next_step_id": next_step},
@@ -155,6 +157,8 @@ def _generate_initial_plan(
     """调用LLM生成初始计划，如果没有LLM则失败"""
     from prompts.query_planner_prompt import build_iterative_metric_planner_prompt
 
+    schema_text = _resolve_schema_context(state)
+
     # 检查是否已有计划（从上游节点传入）
     existing_plan = state.get("metric_plan_nodes")
     if existing_plan:
@@ -162,6 +166,7 @@ def _generate_initial_plan(
         if plan_nodes:
             return {
                 "metric_plan_nodes": plan_nodes,
+                "schema_context": schema_text,
                 "current_step_id": _coerce_str(plan_nodes[0].get("step_id"), ""),
                 "loop_decision": {
                     "decision": "continue",
@@ -188,12 +193,11 @@ def _generate_initial_plan(
             metrics = json.dumps({"selected_indicators": metrics_context}, ensure_ascii=False)
         else:
             metrics = "{}"
-        schema = state.get("schema_context", "{}")
         query = state.get("user_query", "")
 
         prompt = build_iterative_metric_planner_prompt(
             metrics=str(metrics),
-            schema=str(schema),
+            schema=schema_text,
             query=query,
             execution_history="",
             observations="",
@@ -225,6 +229,7 @@ def _generate_initial_plan(
         # 返回初始计划
         return {
             "metric_plan_nodes": plan_nodes,
+            "schema_context": schema_text,
             "current_step_id": plan_nodes[0].get("step_id"),
             "loop_decision": {
                 "decision": "continue",
@@ -257,6 +262,8 @@ def _adjust_plan_with_llm(
     from prompts.query_planner_prompt import build_iterative_metric_planner_prompt
 
     try:
+        schema_text = _resolve_schema_context(state)
+
         # 构建执行历史
         execution_history = _build_execution_history(state, failed_step_id, observation)
         failed_sql_feedback = _sanitize_sql_feedback(_coerce_str(observation.get("sql_executed", ""), ""))
@@ -264,8 +271,10 @@ def _adjust_plan_with_llm(
         # 构建观察反馈
         observations = (
             f"步骤 {failed_step_id} 执行失败:\n"
-            f"- 错误类型: {_coerce_str(observation.get('error_category', 'unknown'), 'unknown')}\n"
+            f"- 错误类型: {_coerce_str(observation.get('error_category', 'OTHER'), 'OTHER')}\n"
             f"- 错误信息: {_coerce_str(observation.get('error_summary', '未知错误'), '未知错误')}\n"
+            f"- 修复建议: {_coerce_str(observation.get('fix_suggestion', '请对照schema与上游中间表结构修正'), '请对照schema与上游中间表结构修正')}\n"
+            f"- 原始错误: {_coerce_str(observation.get('raw_error', ''), '')[:300]}\n"
             f"- 执行SQL片段: {failed_sql_feedback}"
         )
 
@@ -278,7 +287,7 @@ def _adjust_plan_with_llm(
         
         prompt = build_iterative_metric_planner_prompt(
             metrics=metrics_str,
-            schema=str(state.get("schema_context", "{}")),
+            schema=schema_text,
             query=state.get("user_query", ""),
             execution_history=execution_history,
             observations=observations,
@@ -316,6 +325,7 @@ def _adjust_plan_with_llm(
             retry_counters[failed_step_id] = retry_counters.get(failed_step_id, 0) + 1
             return {
                 "metric_plan_nodes": old_plan_nodes,
+                "schema_context": schema_text,
                 "current_step_id": failed_step_id,
                 "retry_counters": dict(retry_counters),
                 "loop_decision": {"decision": "adjust", "reason": "调整计划缺少失败步骤，回退后重试", "next_step_id": failed_step_id},
@@ -331,6 +341,7 @@ def _adjust_plan_with_llm(
 
         return {
             "metric_plan_nodes": new_plan_nodes,
+            "schema_context": schema_text,
             "current_step_id": failed_step_id,  # 从失败步骤重新开始
             "retry_counters": dict(retry_counters),
             "loop_decision": {"decision": "continue", "reason": "计划已调整", "next_step_id": failed_step_id},
@@ -397,6 +408,71 @@ def _build_execution_history(state: AgentState, failed_step_id: str, observation
             history_lines.append(f"○ {step_id} ({intent}): {desc} - 未执行")
 
     return "\n".join(history_lines)
+
+
+def _select_next_runnable_step(
+    plan_nodes: list[PlanNode],
+    state: AgentState,
+    completed_step_id: str = "",
+) -> str:
+    """Pick the next unsatisfied step whose dependencies have all succeeded."""
+    step_status_map_raw = state.get("step_status_map") or {}
+    step_status_map = (
+        step_status_map_raw if isinstance(step_status_map_raw, dict) else {}
+    )
+    step_results = _coerce_step_results(state.get("step_results"))
+    observations = _coerce_observations(state.get("planner_observations"))
+
+    succeeded_steps = {
+        str(step_id)
+        for step_id, status in step_status_map.items()
+        if status == "succeeded"
+    }
+    succeeded_steps.update(
+        step_id
+        for step_id, result in step_results.items()
+        if _coerce_str(result.get("status"), "") == "success"
+    )
+    succeeded_steps.update(
+        _coerce_str(observation.get("step_id"), "")
+        for observation in observations
+        if _coerce_str(observation.get("observation_type"), "") in {"success", "warning"}
+        and _coerce_str(observation.get("step_id"), "")
+    )
+    if completed_step_id:
+        succeeded_steps.add(completed_step_id)
+        completed_index = next(
+            (
+                index
+                for index, node in enumerate(plan_nodes)
+                if _coerce_str(node.get("step_id"), "") == completed_step_id
+            ),
+            -1,
+        )
+        if completed_index > 0:
+            succeeded_steps.update(
+                _coerce_str(node.get("step_id"), "")
+                for node in plan_nodes[:completed_index]
+                if _coerce_str(node.get("step_id"), "")
+            )
+
+    for node in plan_nodes:
+        step_id = _coerce_str(node.get("step_id"), "")
+        if not step_id or step_id in succeeded_steps:
+            continue
+
+        depends_on_raw = node.get("depends_on")
+        depends_on = []
+        if isinstance(depends_on_raw, list):
+            depends_on = [
+                _coerce_str(dep, "")
+                for dep in cast(list[object], depends_on_raw)
+                if _coerce_str(dep, "")
+            ]
+        if all(dep in succeeded_steps for dep in depends_on):
+            return step_id
+
+    return ""
 
 
 def _stabilize_failed_step_identity(
@@ -499,6 +575,29 @@ def _response_to_text(response: object) -> str:
     if isinstance(content, str):
         return content
     return str(response)
+
+
+def _resolve_schema_context(state: AgentState) -> str:
+    """优先复用 state 中 schema_context，缺失时从 SchemaProvider 拉取。"""
+    schema_context = state.get("schema_context")
+    if isinstance(schema_context, str) and schema_context.strip():
+        return schema_context
+
+    workspace_id = state.get("workspace_id")
+    try:
+        try:
+            from tools.schema_provider import get_schema_provider
+        except ImportError:
+            from ..tools.schema_provider import get_schema_provider  # type: ignore[reportMissingImports]
+
+        provider = get_schema_provider(workspace_id)
+        schema_text = provider.get_schema_text()
+        if isinstance(schema_text, str) and schema_text.strip():
+            return schema_text
+    except Exception as exc:
+        logger.warning("加载 schema_context 失败，降级为空对象: %s", exc)
+
+    return "{}"
 
 
 def _sanitize_sql_feedback(sql_text: str) -> str:

@@ -90,53 +90,113 @@ DB_NAME=education_metrics
 python main.py
 ```
 
----
+## Local Operator Runbook (MAZE Architecture)
 
-## 使用示例
+This section covers how to start the full M.A.Z.E stack (Cube.js semantic server + Text2SQL API) and verify functionality.
 
-```
-用户: 你好
-助手: 您好！我是教育指标数据查询助手...
+### Prerequisites
 
-用户: 基础设施情况怎么样
-助手: 您的查询可能存在以下不明确之处：
-      1. 您是要查看所有二级指标还是汇总数据？
-      2. 需要指定哪个地区或年份吗？
+- Python 3.10+ with `pip install -r requirements.txt` completed
+- MySQL running on `localhost:3306`, database `test_number`, credentials in `text2sql/.env`
+- Node.js + npm available (for Cube.js dev server)
 
-用户: 查看北京市的网络覆盖率
-助手: 查询完成，共找到 X 条结果...
-      执行的 SQL: SELECT ...
-```
+### Chart & Replay Compatibility
 
----
+- **Replay**: All legacy SQL trajectories remain playable. Semantic trajectories require `USE_SEMANTIC_METRIC_QUERY=true` for full fidelity replay of the analysis step.
+- **Chart**: The frontend supports both standard SQL result sets and complex analysis results (JSON) from the semantic path.
 
-## 文件结构
+### Startup Sequence
 
-```
-text2sql/
-├── main.py              # 入口文件
-├── config.py            # 配置管理
-├── state.py             # 状态定义
-├── graph.py             # LangGraph 编排
-├── vector_store.py      # 向量检索
-├── .env                 # 环境变量
-├── requirements.txt     # 依赖项
-├── 基教指标.json         # 指标体系定义
-├── test_number.json     # 数据库 Schema
-└── agents/
-    ├── intent_classifier.py   # 意图分类
-    ├── ambiguity_checker.py   # 歧义检测
-    ├── context_assembler.py   # 上下文组装
-    ├── sql_generator.py       # SQL 生成
-    ├── sql_executor.py        # SQL 执行
-    └── response_generator.py  # 响应生成
+**Step 1 — Start Cube semantic server**
+
+```bash
+cd "D:\text2sql v1.3\my-cube-project"
+npm run dev
 ```
 
----
+Wait until the Cube dev server is ready (it will print a `🚀 Cube API` line), then verify:
 
-## 命令说明
+```bash
+curl http://localhost:4000/cubejs-api/v1/meta -H "Authorization: Bearer maze_dev_secret"
+# Expected: JSON with cubes: [Questions, SchoolAnswers, Schools]
+```
 
-| 命令 | 说明 |
-|------|------|
-| `quit` / `exit` | 退出程序 |
-| `reset` | 重置对话状态 |
+**Step 2 — Start Text2SQL API**
+
+```bash
+cd "D:\text2sql v1.3\text2sql"
+python api.py
+```
+
+Verify Health:
+
+```bash
+curl http://localhost:8000/api/health
+# Expected: {"status":"ok"}
+```
+
+**Step 3 — Confirm Semantic Flags in `.env`**
+
+The file `D:\text2sql v1.3\text2sql\.env` must contain these active flags for the semantic path:
+
+| Flag | Description |
+|------|-------------|
+| `USE_SEMANTIC_METRIC_QUERY` | Routes metric-heavy intents to the MAZE semantic engine |
+| `USE_CONSTRAINED_PLANNER` | Forces the planner to use semantic cube definitions instead of raw SQL |
+| `USE_CUBE_SCHEMA_SOURCE` | Fetches schema context from Cube.js instead of static files |
+| `USE_DUCKDB_EXECUTOR` | Enables local multi-step analysis via DuckDB |
+| `CUBE_API_SECRET` | Auth token for the Cube.js backend |
+
+### Rollout Smoke Tests
+
+**METRIC_QUERY** (MAZE semantic path — triggers clarification or full analysis):
+
+```bash
+curl -s -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d "{\"message\":\"对比各省基础设施综合得分排名\",\"session_id\":\"smoke-metric\",\"workspace_id\":\"default\"}"
+# Expected: HTTP 200, intent_type="IntentType.METRIC_QUERY"
+```
+
+**VALUE_QUERY** (legacy SQL path — returns SQL + result count):
+
+```bash
+curl -s -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d "{\"message\":\"北京市学校数量是多少\",\"session_id\":\"smoke-value\",\"workspace_id\":\"default\"}"
+# Expected: HTTP 200, intent_type="IntentType.VALUE_QUERY", sql field non-null
+```
+
+### Rollback and Restore
+
+**Emergency Rollback (Disable MAZE, Revert to Legacy)**
+
+1. Open `text2sql/.env`.
+2. Set `USE_SEMANTIC_METRIC_QUERY=false` and `USE_CONSTRAINED_PLANNER=false`.
+3. Restart the API: `python api.py`.
+4. Both query types will now run through the legacy SQL path without DuckDB or Cube.
+
+**Restoration (Re-enable MAZE)**
+
+1. Open `text2sql/.env`.
+2. Set `USE_SEMANTIC_METRIC_QUERY=true` and `USE_CONSTRAINED_PLANNER=true`.
+3. Restart the API: `python api.py`.
+
+### Failure Handling Policy
+
+| Scenario | Behavior |
+|----------|----------|
+| Cube server offline | Schema source degrades to static metadata; semantic execution returns `语义执行降级: Cube unreachable...`; API stays HTTP 200 |
+| DuckDB step failure | Last successful step's rows preserved in `analysis_result` via `DuckDBExecutorError.partial_artifacts`; `analysis_error` surfaced as message |
+| Partial artifacts on disk | Parquet spill files at `.sisyphus/tmp/duckdb/<workspace>/<request>/` persist until cleanup |
+| User-visible partial results | Only returned when `analysis_result` is non-empty and verification passed; otherwise `analysis_error` is shown |
+
+### Cube MySQL Driver Note
+
+Cube 1.6.23 requires a manual patch for modern MySQL auth. If you run `npm install` in `my-cube-project`, re-apply the patch in `node_modules/@cubejs-backend/mysql-driver/dist/src/MySqlDriver.js`:
+
+```js
+// Line ~3: change 'mysql' to 'mysql2'
+const mysql = require('mysql2');
+```
+

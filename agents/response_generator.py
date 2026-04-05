@@ -344,9 +344,22 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
     if generated_sql:
         reply += f"\n\n---\n执行的 SQL：\n```sql\n{generated_sql}\n```"
     
+    # 限制前端数据量，避免传输过大的数据
+    MAX_FRONTEND_RECORDS = 100
+    total_count = len(execution_result) if isinstance(execution_result, list) else 0
+    if isinstance(execution_result, list) and len(execution_result) > MAX_FRONTEND_RECORDS:
+        frontend_data = execution_result[:MAX_FRONTEND_RECORDS]
+        is_truncated = True
+    else:
+        frontend_data = execution_result
+        is_truncated = False
+    
     return {
         "final_response": reply,
         "messages": [("assistant", reply)],
+        "execution_result": frontend_data,  # 限制后的数据（最多100条）
+        "total_count": total_count,  # 总条数
+        "is_truncated": is_truncated,  # 是否被截断
         "current_node": "response_generator"
     }
 

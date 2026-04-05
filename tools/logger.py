@@ -38,30 +38,35 @@ def init_logger(log_dir: Optional[str] = None):
 def log_trajectory(
     trajectory_id: str,
     user_query: str,
+    intent_type: Optional[str] = None,
     query_plan: Optional[Dict[str, Any]] = None,
+    # VALUE 路径字段
+    generated_sql: Optional[str] = None,
+    execution_result: Optional[Any] = None,
+    execution_error: Optional[str] = None,
+    sql_reflection: Optional[str] = None,
+    # METRIC 路径字段
     analysis_code: Optional[str] = None,
     analysis_result: Optional[Any] = None,
     analysis_error: Optional[str] = None,
     verification_passed: Optional[bool] = None,
     verification_feedback: Optional[str] = None,
+    # 循环执行字段 (新的迭代式指标循环)
+    metric_plan_nodes: Optional[list] = None,
+    execution_history: Optional[list] = None,
+    step_results: Optional[dict] = None,
+    loop_status: Optional[str] = None,
+    metric_final_result: Optional[Any] = None,
+    # 通用字段
+    final_response: Optional[str] = None,
     ground_truth: Optional[Any] = None,
     reward: Optional[float] = None,
     workspace_id: Optional[str] = None,
 ):
     """
-    记录一条轨迹数据
+    记录一条完整的轨迹数据
     
-    Args:
-        trajectory_id: 轨迹唯一标识
-        user_query: 用户原始查询
-        query_plan: 查询规划 (JSON)
-        analysis_code: 生成的 Python 代码
-        analysis_result: 代码执行结果
-        analysis_error: 执行错误信息
-        verification_passed: 验证是否通过
-        verification_feedback: 验证反馈
-        ground_truth: 标准答案 (可选)
-        reward: 奖励值 (可选, 用于 RL)
+    支持 VALUE_QUERY 和 METRIC_QUERY 两种路径的字段记录
     """
     global _log_dir
     
@@ -69,17 +74,51 @@ def log_trajectory(
         init_logger()
     assert _log_dir is not None
     
-    # 构建轨迹记录
+    # 根据意图类型确定执行路径
+    # 处理多种可能的格式: "metric_query", "METRIC_QUERY", "IntentType.METRIC_QUERY"
+    intent_type_str = str(intent_type) if intent_type else ""
+    is_metric = any(keyword in intent_type_str for keyword in 
+                    ["metric_query", "METRIC_QUERY", "Metric"])
+    
+    # 构建轨迹记录 - 区分不同路径的字段
     record = {
         "trajectory_id": trajectory_id,
         "timestamp": datetime.now().isoformat(),
         "user_query": user_query,
-        "query_plan": query_plan,
-        "analysis_code": analysis_code,
-        "analysis_result": _ensure_serializable(analysis_result),
-        "analysis_error": analysis_error,
-        "verification_passed": verification_passed,
-        "verification_feedback": verification_feedback,
+        "intent_type": intent_type,
+        "execution_path": "metric" if is_metric else "value",
+        
+        # 查询规划 (通用)
+        "query_plan": query_plan or {},
+        
+        # VALUE 路径字段
+        "value_path": {
+            "generated_sql": generated_sql,
+            "execution_result": _ensure_serializable(execution_result),
+            "execution_error": execution_error,
+            "sql_reflection": sql_reflection,
+        } if not is_metric else None,
+        
+        # METRIC 路径字段 (包括新的循环执行)
+        "metric_path": {
+            # 旧字段（保持兼容性，但新的循环不使用）
+            "analysis_code": analysis_code,
+            "analysis_result": _ensure_serializable(analysis_result),
+            "analysis_error": analysis_error,
+            "verification_passed": verification_passed,
+            "verification_feedback": verification_feedback,
+            # 循环执行相关 - 新的迭代式循环核心字段
+            "metric_plan_nodes": metric_plan_nodes,
+            "execution_history": execution_history,  # 每步的执行历史（包含SQL）
+            "step_results": _ensure_serializable(step_results),  # 每步的详细结果（包含SQL、行数等）
+            "loop_status": loop_status,
+            "final_result": _ensure_serializable(metric_final_result),
+            # 提取每一步的SQL快照（方便查看）
+            "sql_snapshots": _extract_sql_snapshots(step_results, execution_history),
+        } if is_metric else None,
+        
+        # 通用字段
+        "final_response": final_response,
         "ground_truth": _ensure_serializable(ground_truth),
         "reward": reward,
         "workspace_id": workspace_id,
@@ -96,6 +135,46 @@ def log_trajectory(
 def generate_trajectory_id() -> str:
     """生成唯一的轨迹 ID"""
     return str(uuid.uuid4())[:8]
+
+
+def _extract_sql_snapshots(step_results: Optional[dict], execution_history: Optional[list]) -> list[dict]:
+    """
+    从 step_results 和 execution_history 中提取每一步的 SQL 快照
+    
+    返回格式:
+    [
+        {
+            "step_id": "s1",
+            "sql": "SELECT ...",
+            "status": "success",
+            "row_count": 100,
+            "execution_time_ms": 50
+        },
+        ...
+    ]
+    """
+    snapshots = []
+    
+    if not step_results:
+        return snapshots
+    
+    # 遍历每个步骤的结果
+    for step_id, result in step_results.items():
+        if isinstance(result, dict):
+            snapshot = {
+                "step_id": step_id,
+                "sql": result.get("generated_sql", "")[:1000],  # 限制长度
+                "status": result.get("status", "unknown"),
+                "row_count": result.get("row_count", 0),
+                "execution_time_ms": result.get("execution_time_ms", 0),
+                "is_final_step": result.get("is_final_step", False),
+            }
+            snapshots.append(snapshot)
+    
+    # 按步骤ID排序（假设步骤ID格式为 s1, s2, s3...）
+    snapshots.sort(key=lambda x: x["step_id"])
+    
+    return snapshots
 
 
 def _ensure_serializable(obj: Any) -> Any:

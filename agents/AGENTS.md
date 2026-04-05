@@ -9,10 +9,10 @@ Workflow node implementations live here. Each file usually exports one `create_*
 | Intent routing | `intent_classifier.py` | First semantic split of user requests |
 | Ambiguity loop | `ambiguity_checker.py` | Clarification gating for metric queries |
 | Query planning | `query_planner.py` | Produces `query_plan`, `reasoning_plan`, metric selection |
-| Prompt assembly | `context_assembler.py` | Builds SQL or code-analysis context |
+| Prompt assembly | `context_assembler.py` | Builds SQL-generation context for VALUE_QUERY and schema context handoff |
 | SQL generation | `sql_generator.py` | Model invocation + SQL cleanup |
 | SQL execution / correction | `sql_executor.py`, `sql_corrector.py` | Runtime DB path and retry loop |
-| Metric analysis path | `data_analyzer.py`, `python_executor.py`, `verifier.py` | Code generation, execution, validation |
+| Metric loop path | `metric_loop_planner.py`, `metric_sql_generator.py`, `metric_executor.py`, `metric_observer.py` | Iterative plan/execute/observe loop with step-level retry |
 | Final UX output | `response_generator.py`, `question_suggester.py`, `chart_generator.py` | Natural-language response, recommendations, charts |
 
 ## CONVENTIONS
@@ -25,7 +25,7 @@ Workflow node implementations live here. Each file usually exports one `create_*
 ## ANTI-PATTERNS
 - Do not rename node IDs casually; `graph.py` and `api.py` map specific names for routing and UI step labels.
 - Do not return non-serializable objects in state unless downstream code already handles them.
-- Do not bypass verifier/corrector retry counters; loops are controlled by state fields.
+- Do not bypass retry counters (`correction_count`, `retry_counters`, `loop_iteration`); loops are controlled by state fields.
 - Do not assume all agents use the same model path; SQL generation and analysis nodes already diverge.
 
 ## HOTSPOTS

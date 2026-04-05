@@ -112,13 +112,24 @@ def create_query_planner(llm_client: QueryPlannerLLM):
         selected_metrics = _extract_selected_metrics(query_plan, intent_type)
         target_fields = _extract_target_fields(query_plan, intent_type)
 
-        return {
+        # Phase 2 修复: METRIC_QUERY 需要 schema_context 供下游使用
+        # 因为可能绕过 context_assembler，所以在这里提供 schema_context
+        result = {
             "query_plan": query_plan,
             "reasoning_plan": reasoning_plan_text,
             "selected_metrics": selected_metrics,
             "target_fields": target_fields,
             "current_node": "query_planner",
         }
+        
+        # 如果是指标查询，提供 schema_context 供 metric_loop_planner 和 metric_sql_generator 使用
+        if is_metric_query_intent:
+            result["schema_context"] = schema
+            # 同时提供 metric_plan_nodes (如果 plan 中有)
+            if plan_nodes := query_plan.get("plan_nodes"):
+                result["metric_plan_nodes"] = plan_nodes
+        
+        return result
 
     return query_planner_node
 
@@ -176,6 +187,10 @@ def _is_plan_valid(plan: dict[str, object], intent_type: IntentType) -> bool:
 
     METRIC_QUERY 需要: plan_nodes 或 reasoning/reasoning_steps
     VALUE_QUERY 需要: target_fields 或 reasoning/reasoning_steps
+    
+    Phase 2 优化增强:
+    - 检查步骤ID唯一性
+    - 检查依赖关系有效性（无循环依赖，依赖的步骤存在）
     """
     if not plan:
         return False
@@ -187,9 +202,104 @@ def _is_plan_valid(plan: dict[str, object], intent_type: IntentType) -> bool:
 
     if _is_metric_query_intent(intent_type):
         has_required_filters = _metric_filter_nodes_have_filters(plan)
-        has_terminal_step = _metric_has_terminal_output_step(plan)
+        has_terminal_step = _metric_has_terminal_step_with_output(plan)
+        
+        # Phase 2 优化: 增加 plan_nodes 结构验证
+        if has_plan_nodes:
+            structure_valid = _validate_plan_nodes_structure(plan)
+            if not structure_valid:
+                return False
+        
         return (has_reasoning or has_plan_nodes or bool(plan.get("selected_metrics"))) and has_required_filters and has_terminal_step
     return has_reasoning or bool(plan.get("target_fields"))
+
+
+def _validate_plan_nodes_structure(plan: dict[str, object]) -> bool:
+    """
+    Phase 2 优化: 验证 plan_nodes 的结构完整性
+    
+    检查:
+    1. 步骤ID唯一性
+    2. 依赖关系有效性（被依赖的步骤必须存在）
+    3. 无循环依赖
+    4. 无自依赖
+    5. 无缺失 step_id
+    """
+    plan_nodes_obj = plan.get("plan_nodes")
+    if not isinstance(plan_nodes_obj, list):
+        return True
+    
+    plan_nodes = cast(list[object], plan_nodes_obj)
+    
+    # 收集所有步骤ID和依赖关系
+    step_ids = set()
+    dependencies: dict[str, list[str]] = {}
+    
+    for node_obj in plan_nodes:
+        if not isinstance(node_obj, dict):
+            continue
+        node = cast(dict[str, object], node_obj)
+        step_id = node.get("step_id")
+        
+        # 检查 step_id 存在性
+        if not step_id:
+            logger.warning("计划结构错误: 存在没有 step_id 的步骤")
+            return False
+        
+        step_id_str = str(step_id)
+        
+        # 检查ID唯一性
+        if step_id_str in step_ids:
+            logger.warning(f"计划结构错误: 重复的 step_id '{step_id_str}'")
+            return False
+        step_ids.add(step_id_str)
+        
+        # 收集依赖
+        depends_on = node.get("depends_on")
+        if isinstance(depends_on, list):
+            deps = cast(list[object], depends_on)
+            dependencies[step_id_str] = [str(d) for d in deps if d]
+        else:
+            dependencies[step_id_str] = []
+    
+    # 检查依赖关系有效性、自依赖和循环依赖
+    for step_id, deps in dependencies.items():
+        for dep_id in deps:
+            # 检查被依赖的步骤存在性
+            if dep_id not in step_ids:
+                logger.warning(f"计划结构错误: 步骤 '{step_id}' 依赖不存在的步骤 '{dep_id}'")
+                return False
+            
+            # 检查自依赖
+            if dep_id == step_id:
+                logger.warning(f"计划结构错误: 步骤 '{step_id}' 依赖自身")
+                return False
+    
+    # 循环依赖检测 (DFS)
+    def has_cycle(node: str, visited: set[str], rec_stack: set[str]) -> bool:
+        visited.add(node)
+        rec_stack.add(node)
+        
+        for neighbor in dependencies.get(node, []):
+            if neighbor not in visited:
+                if has_cycle(neighbor, visited, rec_stack):
+                    return True
+            elif neighbor in rec_stack:
+                return True
+        
+        rec_stack.remove(node)
+        return False
+    
+    visited: set[str] = set()
+    rec_stack: set[str] = set()
+    
+    for step_id in step_ids:
+        if step_id not in visited:
+            if has_cycle(step_id, visited, rec_stack):
+                logger.warning(f"计划结构错误: 检测到循环依赖")
+                return False
+    
+    return True
 
 
 def _get_plan_validation_error(
@@ -200,7 +310,7 @@ def _get_plan_validation_error(
         return ""
     if _is_metric_query_intent(intent_type) and not _metric_filter_nodes_have_filters(plan):
         return "METRIC_QUERY 的 filter 步骤缺少 filters 条件"
-    if _is_metric_query_intent(intent_type) and not _metric_has_terminal_output_step(plan):
+    if _is_metric_query_intent(intent_type) and not _metric_has_terminal_step_with_output(plan):
         return "METRIC_QUERY 缺少终局汇总步骤（最后一步必须是 aggregate/derive 且 expected_outputs 非空）"
     return "LLM 未能生成满足当前查询类型要求的计划字段"
 
@@ -228,7 +338,7 @@ def _metric_filter_nodes_have_filters(plan: dict[str, object]) -> bool:
     return True
 
 
-def _metric_has_terminal_output_step(plan: dict[str, object]) -> bool:
+def _metric_has_terminal_step_with_output(plan: dict[str, object]) -> bool:
     plan_nodes_obj = plan.get("plan_nodes")
     if not isinstance(plan_nodes_obj, list):
         return True
