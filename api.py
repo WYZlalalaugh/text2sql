@@ -1,15 +1,18 @@
 """
 Text2SQL API 服务 - FastAPI 后端（支持流式响应）
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from typing import Optional, AsyncGenerator, Any
 import os
 import re
 import json
 import asyncio
+import uuid
+import logging
 from decimal import Decimal
 from datetime import date, datetime
 
@@ -23,11 +26,26 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 from state import AgentState
+from config import config
 from graph import process_clarification
 from runtime_bootstrap import create_runtime_graph  # pyright: ignore[reportMissingImports]
 from tools.result_normalizer import normalize_canonical_tabular_result
+from tools.auth_utils import create_access_token, decode_access_token
+from tools.chat_store import (
+    AuthenticatedUser,
+    append_chat_message,
+    authenticate_user,
+    bootstrap_admin_user,
+    ensure_chat_schema_initialized,
+    ensure_conversation,
+    get_conversation,
+    get_conversation_messages,
+    list_conversations,
+    make_message_preview,
+    update_conversation_after_message,
+)
 
-app = FastAPI(title="Text2SQL 智能体", version="1.0.0")
+app = FastAPI(title="Text2SQL Assistant", version="1.0.0")
 
 # CORS 配置
 app.add_middleware(
@@ -44,7 +62,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
-    enable_suggestions: bool = False  # 新增推荐开关
+    enable_suggestions: bool = False
     workspace_id: Optional[str] = None
 
 
@@ -55,9 +73,45 @@ class ChatResponse(BaseModel):
     intent_type: Optional[str] = None
 
 
+class LoginRequest(BaseModel):
+    """登录请求体。"""
+    username: str
+    password: str
+
+
+class ConversationMessageItem(BaseModel):
+    """单条历史消息结构。"""
+    role: str
+    content: str = ""
+    steps: list[dict[str, Any]] = []
+    sql: Optional[str] = None
+    pythonCode: Optional[str] = None
+    needClarification: bool = False
+    clarificationSections: list[Any] = []
+    reflection: str = ""
+    reasoning: str = ""
+    chartReasoning: str = ""
+    chartSpec: Optional[dict[str, Any]] = None
+    sqlResult: Any = None
+    totalCount: Optional[int] = None
+    isTruncated: bool = False
+
+
+class SaveConversationMessagesRequest(BaseModel):
+    """保存会话历史请求体。"""
+    session_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    title: Optional[str] = None
+    enable_suggestions: bool = False
+    suggested_questions: list[str] = []
+    messages: list[ConversationMessageItem]
+
+
 # 会话存储
 DEFAULT_WORKSPACE_ID = "default"
 sessions = {}
+bearer_scheme = HTTPBearer(auto_error=False)
+chat_schema_ready = {"ready": False}
 
 
 def _normalize_workspace_id(workspace_id: Optional[str]) -> str:
@@ -70,13 +124,52 @@ def _build_session_key(session_id: str, workspace_id: Optional[str] = None) -> s
 
 
 def _serialize_intent_type(intent_type: Any) -> str:
-    """Normalize intent_type into a stable string value for API contracts."""
+    """将意图类型统一序列化为稳定的字符串。"""
     if intent_type is None:
         return ""
     value = getattr(intent_type, "value", None)
     if isinstance(value, str):
         return value
     return str(intent_type)
+
+
+def _ensure_history_services_ready() -> None:
+    """初始化历史记录依赖，只允许作用于当前项目数据库。"""
+    if chat_schema_ready["ready"]:
+        return
+
+    ensure_chat_schema_initialized()
+    bootstrap_admin_user(
+        config.auth.bootstrap_admin_username,
+        config.auth.bootstrap_admin_password,
+    )
+    chat_schema_ready["ready"] = True
+
+
+def _get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> AuthenticatedUser:
+    """解析并校验登录用户。"""
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
+
+    try:
+        payload = decode_access_token(credentials.credentials, config.auth.jwt_secret)
+        return AuthenticatedUser(
+            id=int(payload["uid"]),
+            username=str(payload["username"]),
+            status=str(payload.get("status") or "active"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录凭证无效") from exc
+
+
+def _get_owned_conversation_or_404(user_id: int, conversation_id: str) -> dict[str, Any]:
+    """读取当前用户拥有的会话，不存在时返回 404。"""
+    try:
+        return get_conversation(user_id=user_id, conversation_id=conversation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在") from exc
 
 
 def get_or_create_session(session_id: str, workspace_id: Optional[str] = None):
@@ -101,25 +194,25 @@ def get_or_create_session(session_id: str, workspace_id: Optional[str] = None):
     return sessions[session_key]
 
 
-# 节点名称映射（用于前端显示）
+# 节点名称映射（前端步骤展示）
 NODE_DISPLAY_NAMES = {
     "vector_search": "向量检索",
     "intent_classifier": "意图识别",
     "ambiguity_checker": "歧义检测",
     "query_planner": "查询规划",
     "context_assembler": "上下文组装",
-    "sql_generator": "SQL生成",
-    "sql_executor": "SQL执行",
-    "sql_corrector": "SQL纠错",
+    "sql_generator": "SQL 生成",
+    "sql_executor": "SQL 执行",
+    "sql_corrector": "SQL 修正",
     "metric_loop_planner": "指标循环规划",
-    "metric_sql_generator": "指标SQL生成",
-    "metric_executor": "指标SQL执行",
-    "metric_observer": "指标执行观察",
-    "metric_cleanup": "指标资源清理",
-    "data_analyzer": "代码生成",      # 新增
-    "python_executor": "代码执行",    # 新增
-    "verifier": "结果验证",           # 新增
-    "response_generator": "响应生成"
+    "metric_sql_generator": "指标 SQL 生成",
+    "metric_executor": "指标执行",
+    "metric_observer": "指标观察",
+    "metric_cleanup": "指标清理",
+    "data_analyzer": "代码生成",
+    "python_executor": "代码执行",
+    "verifier": "结果验证",
+    "response_generator": "回答生成",
 }
 
 
@@ -131,84 +224,80 @@ def _build_step_data(
     accumulated_state: AgentState,
     use_accumulated_query_plan: bool = False,
 ) -> dict[str, Any]:
-    """构建单个 step 事件数据，保持 SSE 载荷结构稳定"""
+    """构建前端使用的稳定步骤事件数据。"""
     step_data = {
-        'type': 'step',
-        'step': current_step,
-        'node': node_name,
-        'title': NODE_DISPLAY_NAMES[node_name],
-        'status': 'complete',
-        'message': f"{NODE_DISPLAY_NAMES[node_name]}完成"
+        "type": "step",
+        "step": current_step,
+        "node": node_name,
+        "title": NODE_DISPLAY_NAMES[node_name],
+        "status": "complete",
+        "message": f"{NODE_DISPLAY_NAMES[node_name]}完成",
     }
 
     if node_name == "intent_classifier" and "intent_type" in node_output:
-        intent_val = node_output['intent_type']
-        intent_str = _serialize_intent_type(intent_val)
-        step_data['detail'] = f"识别意图: {intent_str}"
+        intent_str = _serialize_intent_type(node_output["intent_type"])
+        step_data["detail"] = f"识别意图: {intent_str}"
     elif node_name == "query_planner":
-        plan = node_output.get('query_plan', {})
-        reasoning = node_output.get('reasoning_plan', '')
+        plan = node_output.get("query_plan", {})
+        reasoning = node_output.get("reasoning_plan", "")
         if use_accumulated_query_plan:
-            plan = node_output.get('query_plan') or accumulated_state.get('query_plan', {})
-            reasoning = node_output.get('reasoning_plan') or accumulated_state.get('reasoning_plan', '')
+            plan = node_output.get("query_plan") or accumulated_state.get("query_plan", {})
+            reasoning = node_output.get("reasoning_plan") or accumulated_state.get("reasoning_plan", "")
 
-        selected = plan.get('selected_metrics', []) if isinstance(plan, dict) else []
-        if not isinstance(selected, list):
-            selected = []
-        calc = plan.get('calculation_type', '') if isinstance(plan, dict) else ''
-
-        if selected:
-            step_data['detail'] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
+        selected = plan.get("selected_metrics", []) if isinstance(plan, dict) else []
+        calc = plan.get("calculation_type", "") if isinstance(plan, dict) else ""
+        if isinstance(selected, list) and selected:
+            step_data["detail"] = f"筛选指标: {', '.join(selected[:2])}{'...' if len(selected) > 2 else ''}"
         elif calc:
-            step_data['detail'] = f"计算类型: {calc}"
+            step_data["detail"] = f"计算类型: {calc}"
         else:
-            step_data['detail'] = "正在规划查询路径..."
-
+            step_data["detail"] = "正在规划查询路径..."
         if reasoning:
-            step_data['reasoning'] = reasoning
+            step_data["reasoning"] = reasoning
     elif node_name == "sql_generator" and "generated_sql" in node_output:
-        step_data['detail'] = "SQL 语句已生成"
-        step_data['sql'] = node_output.get('generated_sql', '')
+        step_data["detail"] = "SQL 语句已生成"
+        step_data["sql"] = node_output.get("generated_sql", "")
     elif node_name == "sql_executor":
         if "execution_result" in node_output:
-            results = node_output.get('execution_result', [])
-            if results:
-                step_data['detail'] = f"查询返回 {len(results)} 条结果"
+            results = node_output.get("execution_result", [])
+            if isinstance(results, list) and results:
+                step_data["detail"] = f"查询返回 {len(results)} 条结果"
             else:
-                step_data['detail'] = "查询没返回结果"
+                step_data["detail"] = "查询未返回结果"
         elif "execution_error" in node_output:
-            step_data['detail'] = "执行出错，准备纠错"
+            step_data["detail"] = "执行出错，准备纠错"
     elif node_name == "sql_corrector":
-        step_data['detail'] = "AI 正在对执行结果进行反思和修正..."
+        step_data["detail"] = "AI 正在分析执行结果并修正 SQL..."
         if "sql_reflection" in node_output:
-            step_data['reflection'] = node_output.get('sql_reflection', '')
+            step_data["reflection"] = node_output.get("sql_reflection", "")
         if "generated_sql" in node_output:
-            step_data['sql'] = node_output.get('generated_sql', '')
+            step_data["sql"] = node_output.get("generated_sql", "")
     elif node_name == "data_analyzer":
-        if "analysis_code" in node_output and node_output.get("analysis_code"):
-            step_data['detail'] = f"已生成分析代码 ({len(node_output.get('analysis_code', ''))} 字符)"
-            step_data['python_code'] = node_output.get("analysis_code", "")
-        elif "analysis_error" in node_output:
-            step_data['detail'] = "代码生成遇到问题"
+        if node_output.get("analysis_code"):
+            code = node_output.get("analysis_code", "")
+            step_data["detail"] = f"已生成分析代码（{len(code)} 字符）"
+            step_data["python_code"] = code
+        elif node_output.get("analysis_error"):
+            step_data["detail"] = "代码生成遇到问题"
         else:
-            step_data['detail'] = "正在生成分析代码..."
+            step_data["detail"] = "正在生成分析代码..."
     elif node_name == "python_executor":
-        if "analysis_result" in node_output and node_output.get("analysis_result"):
+        if node_output.get("analysis_result"):
             result = node_output.get("analysis_result")
             if isinstance(result, list):
-                step_data['detail'] = f"代码执行成功，返回 {len(result)} 条结果"
+                step_data["detail"] = f"代码执行成功，返回 {len(result)} 条结果"
             else:
-                step_data['detail'] = "代码执行成功"
-        elif "analysis_error" in node_output:
-            step_data['detail'] = f"执行出错: {node_output.get('analysis_error', '')[:50]}..."
+                step_data["detail"] = "代码执行成功"
+        elif node_output.get("analysis_error"):
+            step_data["detail"] = f"执行出错: {str(node_output.get('analysis_error', ''))[:50]}..."
         else:
-            step_data['detail'] = "正在执行分析代码..."
+            step_data["detail"] = "正在执行分析代码..."
     elif node_name == "verifier":
         if node_output.get("verification_passed"):
-            step_data['detail'] = "验证通过"
+            step_data["detail"] = "验证通过"
         else:
             feedback = node_output.get("verification_feedback", "")
-            step_data['detail'] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
+            step_data["detail"] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
     elif node_name == "metric_loop_planner":
         decision = node_output.get("loop_decision", {})
         if isinstance(decision, dict):
@@ -243,23 +332,19 @@ def _build_step_data(
             step_data["detail"] = f"执行完成，返回 {len(rows)} 条结果"
         elif isinstance(node_output.get("execution_result"), dict):
             exec_result = node_output.get("execution_result") or {}
-            if isinstance(exec_result, dict):
-                row_count = exec_result.get("row_count")
-                table_name = exec_result.get("output_table")
-                if row_count is not None and table_name:
-                    step_data["detail"] = f"执行完成，写入中间表 {table_name}（{row_count} 行）"
-                elif row_count is not None:
-                    step_data["detail"] = f"执行完成，{row_count} 行"
-                else:
-                    step_data["detail"] = "指标 SQL 执行完成"
+            row_count = exec_result.get("row_count")
+            table_name = exec_result.get("output_table")
+            if row_count is not None and table_name:
+                step_data["detail"] = f"执行完成，写入中间表 {table_name}（{row_count} 行）"
+            elif row_count is not None:
+                step_data["detail"] = f"执行完成，{row_count} 行"
+            else:
+                step_data["detail"] = "指标 SQL 执行完成"
         else:
             step_data["detail"] = "正在执行指标 SQL..."
     elif node_name == "metric_observer":
         step_status = str(node_output.get("step_status", "") or "")
-        if step_status:
-            step_data["detail"] = f"当前步骤状态: {step_status}"
-        else:
-            step_data["detail"] = "正在评估执行结果..."
+        step_data["detail"] = f"当前步骤状态: {step_status}" if step_status else "正在评估执行结果..."
     elif node_name == "metric_cleanup":
         step_data["detail"] = "已完成临时表与连接清理"
 
@@ -369,12 +454,12 @@ async def _stream_graph_events(
 async def stream_graph_execution(graph, initial_state: AgentState, session: dict[str, Any]) -> AsyncGenerator[str, None]:
     """
     流式执行 LangGraph 并发送步骤更新
-    
+
     Args:
         graph: LangGraph 实例
         initial_state: 初始状态
         session: 会话字典，用于保存状态
-    
+
     Yields:
         SSE 格式的事件数据
     """
@@ -392,32 +477,26 @@ async def stream_graph_execution(graph, initial_state: AgentState, session: dict
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """流式聊天接口"""
+    """流式聊天接口。"""
     session = get_or_create_session(request.session_id, request.workspace_id)
     graph = session["graph"]
-    
+
     if session["waiting_for_clarification"] and session["state"]:
-        # 处理澄清回复 - 使用流式输出
         previous_state = session["state"]
-        
-        # 构建包含澄清信息的新状态
         new_state: AgentState = {
-            "user_query": previous_state.get("user_query", ""),  # 保留原始查询
+            "user_query": previous_state.get("user_query", ""),
             "clarification_response": request.message,
             "messages": previous_state.get("messages", []) + [
                 {"role": "assistant", "content": previous_state.get("clarification_question", "")},
-                {"role": "user", "content": request.message}
+                {"role": "user", "content": request.message},
             ],
             "clarification_count": previous_state.get("clarification_count", 0),
-            "enable_suggestions": request.enable_suggestions,  # 传入推荐开关
+            "enable_suggestions": request.enable_suggestions,
             "workspace_id": previous_state.get("workspace_id") or request.workspace_id or DEFAULT_WORKSPACE_ID,
-            # "refined_intent": request.message, 
         }
-        
-        # 更新会话状态
         session["waiting_for_clarification"] = False
-        
-        async def clarification_stream():
+
+        async def clarification_stream() -> AsyncGenerator[str, None]:
             async for chunk in _stream_graph_events(
                 graph,
                 new_state,
@@ -426,95 +505,77 @@ async def chat_stream(request: ChatRequest):
                 use_accumulated_query_plan=True,
             ):
                 yield chunk
-        
+
         return StreamingResponse(clarification_stream(), media_type="text/event-stream")
-    else:
-        # 新查询 - 重置会话状态，确保不继承上一轮的意图
-        session["state"] = None  # 清空旧状态
-        session["waiting_for_clarification"] = False
-        
-        # 生成新的 thread_id，确保 LangGraph 不从 checkpointer 恢复旧状态
-        import uuid
-        new_thread_id = f"query_{uuid.uuid4().hex[:8]}"
-        session["current_thread_id"] = new_thread_id
-        
-        initial_state: AgentState = {
-            "user_query": request.message,
-            "messages": [("user", request.message)],
-            "clarification_count": 0,
-            "enable_suggestions": request.enable_suggestions,
-            "workspace_id": request.workspace_id or DEFAULT_WORKSPACE_ID,
-        }
-        
-        return StreamingResponse(
-            stream_graph_execution(graph, initial_state, session),
-            media_type="text/event-stream"
-        )
+
+    session["state"] = None
+    session["waiting_for_clarification"] = False
+    session["current_thread_id"] = f"query_{uuid.uuid4().hex[:8]}"
+
+    initial_state: AgentState = {
+        "user_query": request.message,
+        "messages": [("user", request.message)],
+        "clarification_count": 0,
+        "enable_suggestions": request.enable_suggestions,
+        "workspace_id": request.workspace_id or DEFAULT_WORKSPACE_ID,
+    }
+
+    return StreamingResponse(
+        stream_graph_execution(graph, initial_state, session),
+        media_type="text/event-stream",
+    )
 
 
 async def record_log(state: AgentState, workspace_id: Optional[str] = None):
-    """异步记录轨迹日志 - 支持 VALUE 和 METRIC 两种路径"""
+    """异步记录轨迹日志，兼容 VALUE 与 METRIC 两条路径。"""
     try:
         from tools import log_trajectory, generate_trajectory_id
         effective_workspace_id = workspace_id or state.get("workspace_id")
-        
-        # 确保有 ID
+
         tid = state.get("trajectory_id")
         if not tid:
             tid = generate_trajectory_id()
-        
-        # 获取意图类型
+
         intent_type = state.get("intent_type", "")
         intent_type_str = str(intent_type)
-        # 处理多种可能的格式: "metric_query", "METRIC_QUERY", "IntentType.METRIC_QUERY"
-        is_metric = any(keyword in intent_type_str for keyword in 
-                        ["metric_query", "METRIC_QUERY", "Metric"])
-        
-        # 根据路径提取不同的字段
+        is_metric = any(keyword in intent_type_str for keyword in ["metric_query", "METRIC_QUERY", "Metric"])
+
         if is_metric:
-            # METRIC 路径: 新的迭代式循环使用不同的字段
             log_trajectory(
                 trajectory_id=tid,
                 user_query=state.get("user_query") or "",
                 intent_type=str(intent_type),
                 query_plan=state.get("query_plan"),
-                # METRIC 路径字段 - 新的迭代式循环
-                analysis_code=None,  # 新的循环不使用 analysis_code
-                analysis_result=None,  # 新的循环不使用 analysis_result
+                analysis_code=None,
+                analysis_result=None,
                 analysis_error=None,
-                verification_passed=None,  # 新的循环不使用 verifier
+                verification_passed=None,
                 verification_feedback=None,
-                # 循环执行字段 - 这是新的迭代式循环的主要字段
                 metric_plan_nodes=state.get("metric_plan_nodes"),
                 execution_history=state.get("execution_history"),
                 step_results=state.get("step_results"),
                 loop_status=state.get("loop_status"),
                 metric_final_result=state.get("execution_result"),
-                # 通用
                 final_response=state.get("final_response"),
                 ground_truth=None,
                 reward=None,
                 workspace_id=effective_workspace_id,
             )
         else:
-            # VALUE 路径: 记录 SQL 和执行结果
             log_trajectory(
                 trajectory_id=tid,
                 user_query=state.get("user_query") or "",
                 intent_type=str(intent_type),
                 query_plan=state.get("query_plan"),
-                # VALUE 路径字段
                 generated_sql=state.get("generated_sql"),
                 execution_result=state.get("execution_result"),
                 execution_error=state.get("execution_error"),
                 sql_reflection=state.get("sql_reflection"),
-                # 通用
                 final_response=state.get("final_response"),
                 ground_truth=None,
                 reward=None,
                 workspace_id=effective_workspace_id,
             )
-        # print(f"轨迹日志已记录: {tid}")
     except Exception as e:
         print(f"日志记录失败: {e}")
 
@@ -525,14 +586,14 @@ async def chat(request: ChatRequest):
     try:
         session = get_or_create_session(request.session_id, request.workspace_id)
         graph = session["graph"]
-        
+
         # 配置递归限制
         thread_id = session.get("current_thread_id") or session.get("session_key", "default_thread")
         config: dict[str, object] = {
             "recursion_limit": 50,
             "configurable": {"thread_id": thread_id}
         }
-        
+
         if session["waiting_for_clarification"] and session["state"]:
             result = process_clarification(graph, session["state"], request.message, config=config)
         else:
@@ -543,12 +604,12 @@ async def chat(request: ChatRequest):
                 "workspace_id": request.workspace_id or DEFAULT_WORKSPACE_ID,
             }
             result = graph.invoke(initial_state, config=config)
-        
+
         session["state"] = result
-        
+
         # 记录日志
         await record_log(result, workspace_id=request.workspace_id or result.get("workspace_id"))
-        
+
         need_clarification = result.get("ambiguity_detected", False)
         if need_clarification:
             session["waiting_for_clarification"] = True
@@ -556,14 +617,14 @@ async def chat(request: ChatRequest):
         else:
             session["waiting_for_clarification"] = False
             response_text = result.get("final_response", "")
-        
+
         return ChatResponse(
             response=response_text,
             need_clarification=need_clarification,
             sql=result.get("generated_sql"),
             intent_type=_serialize_intent_type(result.get("intent_type"))
         )
-        
+
     except Exception as e:
         import traceback
         print(f"非流式执行错误: {traceback.format_exc()}")
@@ -659,41 +720,31 @@ async def replay_data(request: ReplayRequest):
 
 @app.post("/api/chart")
 async def generate_chart(request: ChartRequest):
-    """生成图表接口"""
+    """生成图表接口。"""
     try:
         session = get_or_create_session(request.session_id, request.workspace_id)
-        
-        # 检查是否有状态
         if not session.get("state"):
             return {"chart_spec": None, "reasoning": "没有可用的查询结果"}
-            
+
         state = session["state"]
-
         chart_data = _normalize_tabular_payload(state=state)
-
         if not chart_data:
             return {"chart_spec": None, "reasoning": "查询未返回数据，无法生成图表"}
-        
-        # 限制传入图表生成器的数据量，避免超出上下文
-        MAX_CHART_RECORDS = 50
-        if isinstance(chart_data, list) and len(chart_data) > MAX_CHART_RECORDS:
-            chart_data = chart_data[:MAX_CHART_RECORDS]
-            
-        # 创建一个临时状态，包含截断后的数据
+
+        max_chart_records = 50
+        if isinstance(chart_data, list) and len(chart_data) > max_chart_records:
+            chart_data = chart_data[:max_chart_records]
+
         chart_state = state.copy()
-        chart_state["execution_result"] = chart_data  # chart_generator 使用 execution_result
-            
-        # 动态导入防止循环依赖
+        chart_state["execution_result"] = chart_data
+
         from agents.chart_generator import create_chart_generator
+
         chart_gen = create_chart_generator()
-        
-        # 调用生成器
-        result = chart_gen(chart_state)
-        
-        return result
-        
+        return chart_gen(chart_state)
     except Exception as e:
         import traceback
+
         print(f"图表生成错误: {traceback.format_exc()}")
         return {"chart_spec": None, "reasoning": f"生成失败: {str(e)}"}
 
@@ -701,17 +752,173 @@ async def generate_chart(request: ChartRequest):
 
 @app.post("/api/reset")
 async def reset_session(session_id: str = "default", workspace_id: Optional[str] = None):
-    """重置会话"""
+    """重置旧版会话。"""
     session_key = _build_session_key(session_id, workspace_id)
     if session_key in sessions:
+        session = sessions[session_key]
+        _cleanup_session_resources(session)
         del sessions[session_key]
     return {"message": "会话已重置"}
+
+
+def _cleanup_session_resources(session: dict[str, Any]) -> None:
+    """
+    清理会话持有的资源
+
+    注意：MetricDBConnectionManager 被 metric_executor 节点闭包捕获，
+    无法直接访问。但我们依赖 MySQL TEMPORARY TABLE 的特性：
+    连接断开时自动清理。
+
+    这里清理的是会话级别的显式资源。
+    """
+    try:
+        # 如果会话有 state，检查是否有需要清理的临时文件
+        state = session.get("state")
+        if state:
+            data_file_path = state.get("data_file_path")
+            if data_file_path:
+                import os
+                try:
+                    if os.path.exists(data_file_path):
+                        os.remove(data_file_path)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"清理临时文件失败: {data_file_path}, {e}")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"清理会话资源时出错: {e}")
+
+
+@app.on_event("startup")
+async def startup_history_services() -> None:
+    """启动时初始化登录与历史记录服务。"""
+    try:
+        _ensure_history_services_ready()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("历史记录服务初始化失败: %s", exc)
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
+    """校验用户名密码并签发访问令牌。"""
+    _ensure_history_services_ready()
+    try:
+        user = authenticate_user(request.username, request.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    token = create_access_token(
+        {"uid": user.id, "username": user.username, "status": user.status},
+        config.auth.jwt_secret,
+        expires_in_minutes=config.auth.jwt_expire_minutes,
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {"id": user.id, "username": user.username, "status": user.status},
+    }
+
+
+@app.get("/api/conversations")
+async def list_history_conversations(
+    current_user: AuthenticatedUser = Depends(_get_current_user),
+):
+    """返回当前登录用户的历史会话列表。"""
+    _ensure_history_services_ready()
+    return {"items": list_conversations(user_id=current_user.id)}
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def get_history_messages(
+    conversation_id: str,
+    current_user: AuthenticatedUser = Depends(_get_current_user),
+):
+    """返回指定会话的历史消息。"""
+    _ensure_history_services_ready()
+    conversation = _get_owned_conversation_or_404(current_user.id, conversation_id)
+    messages = get_conversation_messages(user_id=current_user.id, conversation_id=conversation_id)
+    return {"conversation": conversation, "messages": messages}
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+async def save_history_messages(
+    conversation_id: str,
+    request: SaveConversationMessagesRequest,
+    current_user: AuthenticatedUser = Depends(_get_current_user),
+):
+    """保存一批新增历史消息；会话不存在时自动创建。"""
+    _ensure_history_services_ready()
+    if not request.messages:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="消息列表不能为空")
+
+    conversation = ensure_conversation(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        workspace_id=request.workspace_id or DEFAULT_WORKSPACE_ID,
+        session_id=request.session_id,
+        title=request.title or "",
+        enable_suggestions=request.enable_suggestions,
+    )
+
+    last_message_preview = conversation.get("last_message_preview") or ""
+    for item in request.messages:
+        append_chat_message(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            role=item.role,
+            content=item.content,
+            steps=item.steps,
+            generated_sql=item.sql,
+            python_code=item.pythonCode,
+            need_clarification=item.needClarification,
+            clarification_sections=item.clarificationSections,
+            reflection=item.reflection,
+            reasoning=item.reasoning,
+            chart_reasoning=item.chartReasoning,
+            chart_spec=item.chartSpec,
+            sql_result=item.sqlResult,
+            total_count=item.totalCount,
+            is_truncated=item.isTruncated,
+        )
+        if item.content:
+            last_message_preview = make_message_preview(item.content)
+
+    update_conversation_after_message(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        title=request.title if request.title is not None else conversation.get("title") or "",
+        suggested_questions=request.suggested_questions,
+        enable_suggestions=request.enable_suggestions,
+        last_message_preview=last_message_preview,
+    )
+
+    saved_conversation = get_conversation(user_id=current_user.id, conversation_id=conversation_id)
+    saved_messages = get_conversation_messages(user_id=current_user.id, conversation_id=conversation_id)
+    return {"conversation": saved_conversation, "messages": saved_messages}
 
 
 @app.get("/api/health")
 async def health_check():
     """健康检查"""
     return {"status": "ok"}
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """应用关闭时清理所有会话资源"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"应用关闭，清理 {len(sessions)} 个会话...")
+
+    for session_key, session in list(sessions.items()):
+        try:
+            _cleanup_session_resources(session)
+        except Exception as e:
+            logger.warning(f"清理会话 {session_key} 失败: {e}")
+
+    sessions.clear()
+    logger.info("所有会话资源已清理")
 
 
 # UI 目录路径
@@ -723,14 +930,25 @@ if os.path.exists(ui_dir):
     app.mount("/ui", StaticFiles(directory=ui_dir), name="ui")
 
 
+@app.get("/login")
+async def login_page():
+    """登录页，直接返回 HTML 内容。"""
+    login_path = os.path.join(ui_dir, "login.html")
+    if os.path.exists(login_path):
+        with open(login_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    return HTMLResponse(content="<h1>Login Page Not Found</h1>")
+
+
 @app.get("/")
 async def index():
-    """首页 - 直接返回 HTML 内容"""
+    """首页，直接返回 HTML 内容。"""
     index_path = os.path.join(ui_dir, "index.html")
     if os.path.exists(index_path):
         with open(index_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
-        # 修改静态资源路径（支持带版本号）
+        # 修正相对路径注入
         html_content = re.sub(r'href="style\.css(\?[^"]*)?', r'href="/ui/style.css\1', html_content)
         html_content = re.sub(r'src="script\.js(\?[^"]*)?', r'src="/ui/script.js\1', html_content)
         return HTMLResponse(content=html_content)

@@ -16,7 +16,7 @@
         rel="stylesheet">
 
     <!-- 自定义样式 -->
-    <link rel="stylesheet" href="style.css?v=37">
+    <link rel="stylesheet" href="style.css?v=39">
 </head>
 
 <body>
@@ -130,7 +130,7 @@
                     <svg class="icon logo-icon">
                         <use xlink:href="#icon-ai-star"></use>
                     </svg>
-                    <span>Text2SQL 助手</span>
+                    <span>Text2SQL 洞察中枢</span>
                 </div>
                 <div class="nav-items">
                     <a href="#" class="nav-item active">
@@ -166,11 +166,18 @@
                         <el-switch v-model="enableSuggestions" active-color="#409eff"></el-switch>
                     </div>
                 </div>
-                <div class="user-profile">
+                <div class="user-profile" v-if="currentUser">
                     <svg class="icon">
                         <use xlink:href="#icon-user"></use>
                     </svg>
-                    <span>Admin</span>
+                    <span>{{ currentUser.username }}</span>
+                    <el-button link type="primary" @click="logout">退出</el-button>
+                </div>
+                <div class="user-profile" v-else>
+                    <svg class="icon">
+                        <use xlink:href="#icon-user"></use>
+                    </svg>
+                    <el-button link type="primary" @click="openLoginDialog">登录同步会话</el-button>
                 </div>
             </div>
         </header>
@@ -511,6 +518,14 @@
 
     <!-- 引入 Vue 3 和 Element Plus JS -->
     <script>
+        // 核心鉴权拦截（在 Vue 初始化前执行）
+        // 使用与 script.js 一致的 Key
+        const appMode = localStorage.getItem('text2sql_app_mode_v1');
+        const authToken = localStorage.getItem('text2sql_auth_token_v1');
+        if (appMode !== 'guest' && !authToken) {
+            window.location.href = '/login';
+        }
+
         // Spatial 3D Point-Tracking Logic (Direct DOM Transform overrides)
         document.addEventListener('mousemove', (e) => {
             const cards = document.querySelectorAll('.quick-card, .clarification-panel, .welcome-emblem');

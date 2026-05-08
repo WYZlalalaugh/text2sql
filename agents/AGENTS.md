@@ -12,7 +12,9 @@ Workflow node implementations live here. Each file usually exports one `create_*
 | Prompt assembly | `context_assembler.py` | Builds SQL-generation context for VALUE_QUERY and schema context handoff |
 | SQL generation | `sql_generator.py` | Model invocation + SQL cleanup |
 | SQL execution / correction | `sql_executor.py`, `sql_corrector.py` | Runtime DB path and retry loop |
-| Metric loop path | `metric_loop_planner.py`, `metric_sql_generator.py`, `metric_executor.py`, `metric_observer.py` | Iterative plan/execute/observe loop with step-level retry |
+| Metric loop path | `metric_loop_planner.py`, `metric_sql_generator.py`, `metric_executor.py`, `metric_observer.py` | Iterative plan-execute-observe loop with step-level retry. Observer does raw pass-through (no AI categorization); planner consumes full raw_error + SQL for self-diagnosis |
+| Code analysis path | `data_analyzer.py`, `python_executor.py` | Code-Based mode: LLM generates Python analysis code, sandboxed executor runs it |
+| Verification | `verifier.py` | Validates data analysis results, checks correctness, supports ground-truth comparison |
 | Final UX output | `response_generator.py`, `question_suggester.py`, `chart_generator.py` | Natural-language response, recommendations, charts |
 
 ## CONVENTIONS
@@ -32,6 +34,8 @@ Workflow node implementations live here. Each file usually exports one `create_*
 - `query_planner.py`: schema + metrics loading + JSON extraction from LLM output.
 - `context_assembler.py`: bridge between planning output and downstream prompt/code path.
 - `sql_executor.py`: runtime DB integration and temp-file behavior.
+- `metric_observer.py`: observer does not categorize errors or generate fix suggestions — only passes raw_error + sql_executed to planner; success observation sql_executed is not truncated.
+- `metric_loop_planner.py`: `_adjust_plan_with_llm` reads raw_error + sql_executed directly from observation for prompt assembly, no truncation; `_build_execution_history` errors not truncated; `_sanitize_sql_feedback` removed.
 - `response_generator.py`: final formatting and serialization edge cases.
 
 ## NOTES

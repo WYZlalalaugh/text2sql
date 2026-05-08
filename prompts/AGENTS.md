@@ -13,6 +13,8 @@ Prompt text, SQL rules, domain definitions, and prompt-construction helpers live
 | Code-analysis prompt | `data_analyzer_prompt.py` | Python-analysis generation |
 | Response prompt | `response_prompt.py` | Chitchat and result phrasing |
 | Suggestions | `suggestion_prompt.py` | Follow-up questions |
+| Chart generation | `chart_prompt.py` | Chart rendering prompt |
+| Data validation | `data_validation_prompt.py` | Semantic data validation for metric observer |
 | SQL safety/rules | `sql_rules.py`, `sql_correction_prompt.py` | DB-specific behavior and correction prompts |
 | Domain registry | `domain_config.py` | Education-specific business rules |
 | Shared builder | `prompt_builder.py` | Central composition abstraction |

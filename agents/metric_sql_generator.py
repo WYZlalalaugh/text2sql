@@ -242,11 +242,10 @@ def _build_normal_prompt(
 5. 文本字段筛选默认优先使用 LIKE（模糊匹配），除非用户明确要求精确匹配
 6. 数值/日期字段使用 =、>、<、between、in 等精确/范围比较，不要滥用 LIKE
 7. 若使用 LIKE，注意转义文本中的 `%` 和 `_`（必要时使用 ESCAPE）
-8. **MySQL 8.0 CTE临时表限制（关键！）**：
-   - **禁止**在同一查询中多次引用带别名的临时表（CTE），会导致"Can't reopen table"错误
-   - **错误示例**：```sql WITH t AS (...) SELECT * FROM _metric_step_s3 t CROSS JOIN (SELECT * FROM _metric_step_s3) mm ```
-   - **正确做法**：使用子查询代替CTE，或避免对同一临时表使用别名多次引用
-   - 如果必须在同一个查询中引用临时表两次，使用子查询而不是CTE
+8. **MySQL 8.0 临时表限制（关键！）**：同一查询中**禁止对同一个临时表引用两次**（含子查询），否则报 `Can't reopen table`
+   - **错误示例1**：```sql SELECT * FROM t1 WHERE val = (SELECT MIN(val) FROM t1) ``` — t1被打开两次
+   - **错误示例2**：```sql WITH t AS (...) SELECT * FROM t CROSS JOIN (SELECT * FROM t) ```
+   - **正确做法**：用窗口函数或ORDER BY替代子查询引用同一临时表，如 `SELECT ..., RANK() OVER (ORDER BY val ASC) FROM t1`
 9. **窗口函数规则（关键！）**：
    - 不能在 RANK()、ROW_NUMBER() 等窗口函数的 ORDER BY 子句中嵌套其他窗口函数（如 MIN() OVER、MAX() OVER）
    - **错误示例**：`RANK() OVER (ORDER BY (value - MIN(value) OVER ()) / (MAX(value) OVER () - MIN(value) OVER ()))`
@@ -254,6 +253,7 @@ def _build_normal_prompt(
 10. **只输出MySQL 8.0兼容的SQL代码**，严禁生成其他数据库方言
 11. 绝对不要输出"SQL:", "解释:", "思路:", markdown 代码块等非SQL内容
 12. 输出格式必须为：<SQL>...SQL语句...</SQL>
+13. **筛选值必须直接取自"计划中的筛选条件"的value字段（关键！）**：禁止从描述文本推断筛选值；若描述与filters矛盾，以filters为准
 
 ## 字段名使用规范（关键！）
 **正确示例**：
@@ -379,6 +379,7 @@ def _build_retry_prompt(
     - 不能在 RANK()、ROW_NUMBER() 等窗口函数的 ORDER BY 子句中嵌套其他窗口函数
 11. **只生成MySQL 8.0兼容的SQL代码**
 12. 输出格式必须为：<SQL>...SQL语句...</SQL>
+13. **筛选值必须直接取自"计划中的筛选条件"的value字段（关键！）**：禁止从描述文本推断筛选值；若描述与filters矛盾，以filters为准
 
 ## 字段名使用规范
 - 仅使用"上游临时表结构"和"数据库Schema"中明确列出的字段名

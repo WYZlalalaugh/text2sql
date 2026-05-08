@@ -13,10 +13,21 @@ const app = createApp({
         const currentThreadTitle = ref('');
         const enableSuggestions = ref(false); // 默认关闭开关
         const isDarkTheme = ref(true);
-        const STORAGE_KEY = 'text2sql_chat_state_v1';
+        const STORAGE_KEY = 'text2sql_guest_chat_state_v2';
+        const LEGACY_STORAGE_KEY = 'text2sql_chat_state_v1';
+        const AUTH_STORAGE_KEY = 'text2sql_auth_state_v1';
+        const AUTH_TOKEN_KEY = 'text2sql_auth_token_v1';
+        const AUTH_USER_KEY = 'text2sql_auth_user_v1';
+        const APP_MODE_KEY = 'text2sql_app_mode_v1';
+        const LOCAL_DRAFT_KEY = 'text2sql_draft_v1';
+        const MAX_PERSIST_MESSAGES = 80;
+        const MAX_THREAD_COUNT = 50;
 
         // 当前回答的步骤（用于流式显示）
         const currentSteps = ref([]);
+
+        const authToken = ref('');
+        const currentUser = ref(null);
 
         // 数据展示弹窗
         const dialogVisible = ref(false);
@@ -221,13 +232,176 @@ const app = createApp({
 
         // 推荐问题（动态获取）
         const suggestedQuestions = ref([]);
-        const MAX_PERSIST_MESSAGES = 80;
-        const MAX_THREAD_COUNT = 50;
         const threadList = ref([]);
         const activeThreadId = ref('');
         let suspendPersist = false;
 
         const createThreadId = () => `thread_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const isAuthenticated = () => Boolean(authToken.value);
+        const getActiveDraftKey = () => `${LOCAL_DRAFT_KEY}:${activeThreadId.value || 'default'}`;
+        const createHeaders = (extraHeaders = {}) => {
+            const headers = { ...extraHeaders };
+            if (isAuthenticated()) {
+                headers.Authorization = `Bearer ${authToken.value}`;
+            }
+            return headers;
+        };
+        const parseServerTime = (value) => {
+            if (!value) return Date.now();
+            const ts = Date.parse(value);
+            return Number.isNaN(ts) ? Date.now() : ts;
+        };
+        const inflateMessageForRuntime = (msg) => ({
+            ...msg,
+            steps: Array.isArray(msg?.steps) ? msg.steps : [],
+            clarificationSections: Array.isArray(msg?.clarificationSections) ? msg.clarificationSections : [],
+            isStreaming: false,
+            isChartLoading: false,
+            isReplayLoading: false
+        });
+        const normalizeConversationSummary = (thread = {}) => ({
+            id: thread.id || createThreadId(),
+            sessionId: thread.session_id || thread.sessionId || createSessionId(),
+            workspaceId: thread.workspace_id || thread.workspaceId || '',
+            title: thread.title || '',
+            messages: Array.isArray(thread.messages) ? thread.messages.map((msg) => inflateMessageForRuntime(msg)) : [],
+            suggestedQuestions: Array.isArray(thread.suggested_questions) ? thread.suggested_questions : (Array.isArray(thread.suggestedQuestions) ? thread.suggestedQuestions : []),
+            enableSuggestions: Boolean(
+                typeof thread.enable_suggestions === 'boolean' ? thread.enable_suggestions : thread.enableSuggestions
+            ),
+            lastMessagePreview: thread.last_message_preview || thread.lastMessagePreview || '',
+            updatedAt: parseServerTime(thread.updated_at || thread.updatedAt),
+            createdAt: parseServerTime(thread.created_at || thread.createdAt)
+        });
+        const saveDraft = (value) => {
+            try {
+                localStorage.setItem(getActiveDraftKey(), value || '');
+            } catch (e) {
+                console.warn('保存草稿失败:', e);
+            }
+        };
+        const restoreDraft = () => {
+            try {
+                inputMessage.value = localStorage.getItem(getActiveDraftKey()) || '';
+            } catch (e) {
+                console.warn('恢复草稿失败:', e);
+            }
+        };
+        const clearDraft = () => {
+            try {
+                localStorage.removeItem(getActiveDraftKey());
+            } catch (e) {
+                console.warn('清理草稿失败:', e);
+            }
+        };
+        const persistAuthState = () => {
+            try {
+                const payload = {
+                    version: 1,
+                    activeThreadId: activeThreadId.value,
+                    uiTheme: isDarkTheme.value ? 'dark' : 'light'
+                };
+                localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload));
+            } catch (e) {
+                console.warn('保存鉴权状态失败:', e);
+            }
+            saveDraft(inputMessage.value);
+        };
+        const clearAuthState = () => {
+            try {
+                localStorage.removeItem(AUTH_STORAGE_KEY);
+                localStorage.removeItem(AUTH_TOKEN_KEY);
+                localStorage.removeItem(AUTH_USER_KEY);
+            } catch (e) {
+                console.warn('清理鉴权状态失败:', e);
+            }
+        };
+        const setAppMode = (mode) => {
+            try {
+                if (mode) {
+                    localStorage.setItem(APP_MODE_KEY, mode);
+                } else {
+                    localStorage.removeItem(APP_MODE_KEY);
+                }
+            } catch (e) {
+                console.warn('设置应用模式失败:', e);
+            }
+        };
+        const applyThreadSummaryUpdate = (thread) => {
+            const normalized = normalizeConversationSummary(thread);
+            const idx = threadList.value.findIndex((item) => item.id === normalized.id);
+            if (idx >= 0) {
+                threadList.value[idx] = {
+                    ...threadList.value[idx],
+                    ...normalized
+                };
+            } else {
+                threadList.value.unshift(normalized);
+            }
+            threadList.value = threadList.value
+                .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+                .slice(0, MAX_THREAD_COUNT);
+        };
+        const setAuthenticatedUser = (token, user) => {
+            authToken.value = token || '';
+            currentUser.value = user || null;
+            if (token) {
+                localStorage.setItem(AUTH_TOKEN_KEY, token);
+            } else {
+                localStorage.removeItem(AUTH_TOKEN_KEY);
+            }
+            if (user) {
+                localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+            } else {
+                localStorage.removeItem(AUTH_USER_KEY);
+            }
+        };
+        const handleAuthFailure = (error) => {
+            console.warn('鉴权请求失败，回退到本地模式:', error);
+            clearAuthState();
+            authToken.value = '';
+            currentUser.value = null;
+            ElMessage.warning('登录态已失效，请重新登录');
+        };
+        const apiFetch = async (url, options = {}) => {
+            const response = await fetch(url, {
+                ...options,
+                headers: createHeaders(options.headers || {})
+            });
+            if (response.status === 401) {
+                handleAuthFailure('unauthorized');
+                throw new Error('登录已过期，请重新登录');
+            }
+            return response;
+        };
+
+        const saveAuthenticatedHistory = async (conversationId, messageBatch) => {
+            if (!isAuthenticated() || !conversationId || !Array.isArray(messageBatch) || messageBatch.length === 0) {
+                return;
+            }
+
+            const response = await apiFetch(`/api/conversations/${conversationId}/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    title: currentThreadTitle.value || '',
+                    enable_suggestions: enableSuggestions.value,
+                    suggested_questions: suggestedQuestions.value,
+                    messages: messageBatch.map((msg) => serializeMessageForStorage(msg))
+                })
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload.detail || '保存历史失败');
+            }
+            const payload = await response.json();
+            const summary = normalizeConversationSummary({
+                ...payload.conversation,
+                messages: Array.isArray(payload.messages) ? payload.messages : []
+            });
+            applyThreadSummaryUpdate(summary);
+        };
 
         const applyTheme = (darkMode) => {
             const theme = darkMode ? 'dark' : 'light';
@@ -254,8 +428,13 @@ const app = createApp({
                 reflection: msg.reflection || '',
                 reasoning: msg.reasoning || '',
                 chartReasoning: msg.chartReasoning || '',
+                chartSpec: msg.chartSpec || null,
+                sqlResult: msg.sqlResult || null,
+                totalCount: msg.totalCount || null,
+                isTruncated: Boolean(msg.isTruncated),
                 isStreaming: false,
-                isChartLoading: false
+                isChartLoading: false,
+                isReplayLoading: false
             };
         };
 
@@ -322,6 +501,11 @@ const app = createApp({
 
         const saveClientState = () => {
             if (suspendPersist) return;
+            if (isAuthenticated()) {
+                upsertActiveThreadFromRuntime();
+                persistAuthState();
+                return;
+            }
             try {
                 upsertActiveThreadFromRuntime();
                 const payload = {
@@ -340,27 +524,80 @@ const app = createApp({
             suspendPersist = true;
             try {
                 activeThreadId.value = thread.id;
-                sessionId = thread.sessionId;
+                sessionId = thread.sessionId || createSessionId();
                 currentThreadTitle.value = thread.title || '';
                 messages.value = Array.isArray(thread.messages)
-                    ? thread.messages.map((msg) => ({
-                        ...msg,
-                        isStreaming: false,
-                        isChartLoading: false,
-                        isReplayLoading: false
-                    }))
+                    ? thread.messages.map((msg) => inflateMessageForRuntime(msg))
                     : [];
                 suggestedQuestions.value = Array.isArray(thread.suggestedQuestions) ? thread.suggestedQuestions : [];
                 enableSuggestions.value = Boolean(thread.enableSuggestions);
             } finally {
                 suspendPersist = false;
             }
+            restoreDraft();
         };
 
-        const createNewThread = () => {
+        const loadAuthenticatedThread = async (threadId) => {
+            const response = await apiFetch(`/api/conversations/${threadId}/messages`);
+            if (!response.ok) {
+                throw new Error('加载会话历史失败');
+            }
+            const payload = await response.json();
+            const thread = normalizeConversationSummary({
+                ...payload.conversation,
+                messages: Array.isArray(payload.messages) ? payload.messages : []
+            });
+            applyThreadSummaryUpdate(thread);
+            applyThreadToRuntime(thread);
+            persistAuthState();
+            scrollToBottom();
+        };
+
+        const loadAuthenticatedConversations = async () => {
+            const response = await apiFetch('/api/conversations');
+            if (!response.ok) {
+                throw new Error('加载会话列表失败');
+            }
+            const payload = await response.json();
+            const items = Array.isArray(payload.items) ? payload.items.map((item) => normalizeConversationSummary(item)) : [];
+            threadList.value = items;
+
+            if (items.length === 0) {
+                const freshThread = makeThreadSnapshot();
+                threadList.value = [freshThread];
+                applyThreadToRuntime(freshThread);
+                persistAuthState();
+                return freshThread;
+            }
+
+            let nextThreadId = activeThreadId.value;
+            try {
+                const authState = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || '{}');
+                if (!nextThreadId && authState && typeof authState.activeThreadId === 'string') {
+                    nextThreadId = authState.activeThreadId;
+                }
+            } catch (e) {
+                console.warn('读取鉴权状态失败:', e);
+            }
+
+            const target = items.find((item) => item.id === nextThreadId) || items[0];
+            await loadAuthenticatedThread(target.id);
+            return target;
+        };
+
+        const createNewThread = async () => {
             if (isLoading.value) {
                 ElMessage.warning('请等待当前查询完成后再新建对话');
                 return;
+            }
+
+            if (isAuthenticated()) {
+                const freshThread = makeThreadSnapshot();
+                threadList.value = [freshThread, ...threadList.value.filter((item) => item.id !== freshThread.id)]
+                    .slice(0, MAX_THREAD_COUNT);
+                applyThreadToRuntime(freshThread);
+                persistAuthState();
+                return freshThread;
             }
 
             upsertActiveThreadFromRuntime();
@@ -368,15 +605,20 @@ const app = createApp({
             threadList.value.unshift(freshThread);
             applyThreadToRuntime(freshThread);
             saveClientState();
+            return freshThread;
         };
 
-        const switchThread = (threadId) => {
+        const switchThread = async (threadId) => {
             if (isLoading.value) {
                 ElMessage.warning('请等待当前查询完成后再切换对话');
                 return;
             }
 
             if (!threadId || threadId === activeThreadId.value) return;
+            if (isAuthenticated()) {
+                await loadAuthenticatedThread(threadId);
+                return;
+            }
             upsertActiveThreadFromRuntime();
 
             const target = threadList.value.find((t) => t.id === threadId);
@@ -386,9 +628,14 @@ const app = createApp({
             scrollToBottom();
         };
 
-        const restoreClientState = () => {
+        const restoreLegacyClientState = () => {
             try {
-                const raw = localStorage.getItem(STORAGE_KEY);
+                let raw = localStorage.getItem(STORAGE_KEY);
+                const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+                if (raw && legacyRaw && raw === legacyRaw) {
+                    localStorage.removeItem(STORAGE_KEY);
+                    raw = '';
+                }
                 if (!raw) {
                     const first = makeThreadSnapshot();
                     threadList.value = [first];
@@ -472,6 +719,96 @@ const app = createApp({
             } catch (e) {
                 console.warn('清理本地会话失败:', e);
             }
+        };
+
+        const migrateLegacyGuestState = () => {
+            try {
+                const currentRaw = localStorage.getItem(STORAGE_KEY);
+                if (currentRaw) {
+                    return;
+                }
+
+                const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+                if (!legacyRaw) {
+                    return;
+                }
+
+                const payload = JSON.parse(legacyRaw);
+                if (!payload || typeof payload !== 'object') {
+                    return;
+                }
+
+                const hasThreads = Array.isArray(payload.threads) && payload.threads.length > 0;
+                const hasLegacySingleSession = Array.isArray(payload.messages) && payload.messages.length > 0;
+                if (!hasThreads && !hasLegacySingleSession) {
+                    return;
+                }
+
+                localStorage.setItem(STORAGE_KEY, legacyRaw);
+            } catch (e) {
+                console.warn('迁移旧访客会话失败:', e);
+            }
+        };
+
+        const openLoginDialog = () => {
+            window.location.href = '/login';
+        };
+
+        const logout = () => {
+            if (isLoading.value) {
+                ElMessage.warning('请等待当前查询完成后再退出登录');
+                return;
+            }
+
+            clearAuthState();
+            setAppMode('');
+            authToken.value = '';
+            currentUser.value = null;
+            localStorage.removeItem('hasSkippedLogin');
+            window.location.href = '/login';
+        };
+
+        const initializeApp = async () => {
+            applyTheme(isDarkTheme.value);
+            try {
+                const appMode = localStorage.getItem(APP_MODE_KEY);
+                const skippedLogin = localStorage.getItem('hasSkippedLogin');
+                const savedToken = localStorage.getItem(AUTH_TOKEN_KEY) || '';
+                const savedUser = localStorage.getItem(AUTH_USER_KEY);
+                const authState = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || '{}');
+                
+                if (authState && (authState.uiTheme === 'light' || authState.uiTheme === 'dark')) {
+                    isDarkTheme.value = authState.uiTheme === 'dark';
+                    applyTheme(isDarkTheme.value);
+                }
+
+                if (appMode === 'guest' || skippedLogin) {
+                    clearAuthState();
+                    setAppMode('guest');
+                    restoreLegacyClientState();
+                    return;
+                }
+
+                if ((appMode === 'auth' || (!appMode && savedToken && savedUser)) && savedToken && savedUser) {
+                    authToken.value = savedToken;
+                    currentUser.value = JSON.parse(savedUser);
+                    setAppMode('auth');
+                    await loadAuthenticatedConversations();
+                    return;
+                } else if (appMode === 'auth' || !skippedLogin) {
+                    window.location.href = '/login';
+                    return;
+                }
+            } catch (e) {
+                console.warn('恢复登录态失败:', e);
+                clearAuthState();
+                if (localStorage.getItem(APP_MODE_KEY) !== 'guest' && !localStorage.getItem('hasSkippedLogin')) {
+                    window.location.href = '/login';
+                    return;
+                }
+            }
+
+            restoreLegacyClientState();
         };
 
         // 格式化 Markdown
@@ -751,6 +1088,13 @@ const app = createApp({
 
         const sendMessage = async (content) => {
             if (!content.trim() || isLoading.value) return;
+            if (isAuthenticated() && !activeThreadId.value) {
+                await createNewThread();
+            }
+            const pendingConversationId = activeThreadId.value || createThreadId();
+            if (!activeThreadId.value) {
+                activeThreadId.value = pendingConversationId;
+            }
 
             // 添加用户消息
             messages.value.push({ role: 'user', content: content });
@@ -758,6 +1102,7 @@ const app = createApp({
             lastClarificationDraft.value = '';
             isLoading.value = true;
             currentSteps.value = [];
+            clearDraft();
 
             // 设置标题
             if (!currentThreadTitle.value) {
@@ -787,15 +1132,17 @@ const app = createApp({
 
             try {
                 // 使用流式 API
-                const response = await fetch('/api/chat/stream', {
+                const url = '/api/chat/stream';
+                const body = {
+                    message: content,
+                    session_id: sessionId,
+                    enable_suggestions: enableSuggestions.value
+                };
+                const response = await apiFetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: content,
-                        session_id: sessionId,
-                        enable_suggestions: enableSuggestions.value
-                    }),
-                    signal: currentAbortController.signal  // 添加取消信号
+                    body: JSON.stringify(body),
+                    signal: currentAbortController.signal
                 });
 
                 if (!response.ok) throw new Error('API 请求失败');
@@ -928,12 +1275,39 @@ const app = createApp({
             } finally {
                 isLoading.value = false;
                 currentAbortController = null;
+                if (isAuthenticated()) {
+                    try {
+                        await saveAuthenticatedHistory(pendingConversationId, [
+                            { role: 'user', content },
+                            tempMessage
+                        ]);
+                    } catch (e) {
+                        ElMessage.error(`保存历史失败：${e.message || e}`);
+                    }
+                }
+                upsertActiveThreadFromRuntime();
+                saveClientState();
                 scrollToBottom();
             }
         };
 
         // 清空当前对话（保留历史线程）
         const resetChat = async () => {
+            if (isAuthenticated()) {
+                try {
+                    await fetch(`/api/reset?session_id=${sessionId}`, { method: 'POST' });
+                    sessionId = createSessionId();
+                    messages.value = [];
+                    currentThreadTitle.value = '';
+                    suggestedQuestions.value = [];
+                    saveClientState();
+                    ElMessage.success('当前会话已清空，历史记录仍可查看');
+                } catch (e) {
+                    ElMessage.error(`重置失败：${e.message || e}`);
+                }
+                return;
+            }
+
             try {
                 await fetch(`/api/reset?session_id=${sessionId}`, { method: 'POST' });
             } catch (e) {
@@ -993,14 +1367,16 @@ const app = createApp({
         watch(currentThreadTitle, saveClientState);
         watch(suggestedQuestions, saveClientState, { deep: true });
         watch(enableSuggestions, saveClientState);
+        watch(inputMessage, (val) => {
+            saveDraft(val);
+        });
         watch(isDarkTheme, (val) => {
             applyTheme(Boolean(val));
             saveClientState();
         });
 
         onMounted(() => {
-            applyTheme(isDarkTheme.value);
-            restoreClientState();
+            initializeApp();
             window.addEventListener('beforeunload', saveClientState);
             scrollToBottom();
         });
@@ -1018,6 +1394,10 @@ const app = createApp({
             activeThreadId,
             currentThreadTitle,
             suggestedQuestions,
+            authToken,
+            currentUser,
+            openLoginDialog,
+            logout,
             isDarkTheme,
             toggleTheme,
             getThreadTitle,

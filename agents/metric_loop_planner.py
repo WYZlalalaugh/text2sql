@@ -266,16 +266,15 @@ def _adjust_plan_with_llm(
 
         # 构建执行历史
         execution_history = _build_execution_history(state, failed_step_id, observation)
-        failed_sql_feedback = _sanitize_sql_feedback(_coerce_str(observation.get("sql_executed", ""), ""))
 
-        # 构建观察反馈
+        # 构建观察反馈 — 直接从 observation 读取原始错误，不做加工
+        raw_error = _coerce_str(observation.get('raw_error', ''), '')
+        sql_executed = _coerce_str(observation.get('sql_executed', ''), '')
+        
         observations = (
             f"步骤 {failed_step_id} 执行失败:\n"
-            f"- 错误类型: {_coerce_str(observation.get('error_category', 'OTHER'), 'OTHER')}\n"
-            f"- 错误信息: {_coerce_str(observation.get('error_summary', '未知错误'), '未知错误')}\n"
-            f"- 修复建议: {_coerce_str(observation.get('fix_suggestion', '请对照schema与上游中间表结构修正'), '请对照schema与上游中间表结构修正')}\n"
-            f"- 原始错误: {_coerce_str(observation.get('raw_error', ''), '')[:300]}\n"
-            f"- 执行SQL片段: {failed_sql_feedback}"
+            f"原始错误:\n{raw_error}\n\n"
+            f"执行SQL:\n{sql_executed}"
         )
 
         # 构建提示词
@@ -392,7 +391,7 @@ def _build_execution_history(state: AgentState, failed_step_id: str, observation
                     history_lines.append(f"✓ {step_id}#{index} ({intent}): {desc} - 成功, {rows}行")
                 else:
                     error = _coerce_str(attempt.get("error"), "未知错误")
-                    history_lines.append(f"✗ {step_id}#{index} ({intent}): {desc} - 失败: {error[:120]}")
+                    history_lines.append(f"✗ {step_id}#{index} ({intent}): {desc} - 失败: {error}")
         elif step_id in step_results:
             result = step_results[step_id]
             status = _coerce_str(result.get("status"), "unknown")
@@ -402,8 +401,8 @@ def _build_execution_history(state: AgentState, failed_step_id: str, observation
             else:
                 history_lines.append(f"✗ {step_id} ({intent}): {desc} - {status}")
         elif step_id == failed_step_id:
-            obs_error = _coerce_str(observation.get("error_summary"), "未知错误")
-            history_lines.append(f"✗ {step_id} ({intent}): {desc} - 失败: {obs_error[:120]}")
+            obs_error = _coerce_str(observation.get("raw_error"), "未知错误")
+            history_lines.append(f"✗ {step_id} ({intent}): {desc} - 失败: {obs_error}")
         else:
             history_lines.append(f"○ {step_id} ({intent}): {desc} - 未执行")
 
@@ -598,24 +597,6 @@ def _resolve_schema_context(state: AgentState) -> str:
         logger.warning("加载 schema_context 失败，降级为空对象: %s", exc)
 
     return "{}"
-
-
-def _sanitize_sql_feedback(sql_text: str) -> str:
-    """提取失败 SQL 的可执行片段，避免把解释性文本注入下一轮提示词。"""
-    text = sql_text.strip()
-    if not text:
-        return "（无SQL片段）"
-
-    match = re.search(r"(?is)\b(CREATE\s+TABLE|SELECT)\b", text)
-    if not match:
-        return "（失败输出中无可识别SQL）"
-
-    candidate = text[match.start():]
-    semicolon_idx = candidate.find(";")
-    if semicolon_idx >= 0:
-        candidate = candidate[: semicolon_idx + 1]
-
-    return candidate[:240].replace("\n", " ").strip()
 
 
 def _coerce_int(value: object, default: int) -> int:

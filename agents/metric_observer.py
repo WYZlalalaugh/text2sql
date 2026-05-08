@@ -410,37 +410,19 @@ def _create_failure_observation(
     error: str,
     sql: str,
 ) -> Observation:
-    """创建失败观察记录"""
+    """创建失败观察记录 — 直接透传原始错误，不做任何分类、截断或建议"""
 
-    normalized_error = _normalize_error_message(error)
-    error_lower = normalized_error.lower()
-
-    # 错误分类
-    if any(kw in error_lower for kw in ["syntax", "parse", "invalid_function"]):
-        category = "SYNTAX_ERROR"
-        suggestion = "使用更简单的SQL语法，避免复杂函数"
-    elif any(kw in error_lower for kw in ["column", "not exist", "unknown column", "field", "1054"]):
-        category = "SCHEMA_MISMATCH"
-        suggestion = "检查列名是否与Schema匹配"
-    elif any(kw in error_lower for kw in ["timeout", "slow", "lock"]):
-        category = "PERFORMANCE"
-        suggestion = "添加过滤条件或分批处理"
-    elif any(kw in error_lower for kw in ["permission", "access", "denied"]):
-        category = "PERMISSION"
-        suggestion = "检查数据库权限"
-    else:
-        category = "OTHER"
-        suggestion = "查看SQL并重试"
+    # 去掉 executor 加的前缀（"执行失败: "），保留 MySQL 原始报错
+    raw_error = str(error)
+    if raw_error.startswith("执行失败:"):
+        raw_error = raw_error[len("执行失败:"):].strip()
 
     return {
         "step_id": step_id,
         "observation_type": "failed",
-        "sql_executed": sql[:500] if sql else "",
+        "sql_executed": sql if sql else "",
         "execution_duration_ms": 0,
-        "error_summary": normalized_error[:300],
-        "error_category": category,
-        "fix_suggestion": suggestion,
-        "raw_error": error[:500],
+        "raw_error": raw_error,
         "data_summary": None,
         "quality_issues": [],
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -481,11 +463,8 @@ def _create_success_observation(
     return {
         "step_id": step_id,
         "observation_type": observation_type,
-        "sql_executed": sql[:500] if sql else "",
+        "sql_executed": sql if sql else "",
         "execution_duration_ms": execution_time_ms,
-        "error_summary": None,
-        "error_category": None,
-        "fix_suggestion": None,
         "data_summary": {
             "row_count": row_count,
             "schema_snapshot": schema_snapshot,
@@ -530,25 +509,6 @@ def _to_int(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def _normalize_error_message(error: str) -> str:
-    """统一清洗错误信息，尽量保留关键语义并移除冗余前缀。"""
-    text = str(error).strip()
-    if not text:
-        return "未知执行错误"
-
-    # 常见包装前缀清理
-    prefixes = ["执行失败:", "sql execution failed:", "error:"]
-    lowered = text.lower()
-    for prefix in prefixes:
-        if lowered.startswith(prefix.lower()):
-            text = text[len(prefix):].strip()
-            break
-
-    # 仅取首行，避免噪音堆叠
-    first_line = text.splitlines()[0].strip() if text.splitlines() else text
-    return first_line or "未知执行错误"
 
 
 __all__ = ["create_metric_observer"]

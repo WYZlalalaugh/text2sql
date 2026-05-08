@@ -106,7 +106,8 @@ _ITERATIVE_METRIC_PLANNER_PROMPT = """你是数据分析规划师，将用户问
 4. **过滤条件**：filter步骤必须包含`filters`数组，文本字段默认用`like`模糊匹配
 5. **依赖关系**：通过`depends_on`定义DAG，后续步骤引用前序输出
 6. **不要遗漏过滤**：仔细提取用户查询中的所有筛选条件（时间、地点、指标类型等），确保在filters中体现
-7. **expected_outputs必须完整（关键！）**：
+7. **指标名称必须原样引用（关键！）**：`description`和`filters.value`中的指标名称必须与指标体系JSON中的名称完全一致，禁止添加括号说明、解释文字或其他任何修饰（如JSON中是"人力保障"，不得写为"人力保障（人员编制）"）
+8. **expected_outputs必须完整（关键！）**：
    - **filters中使用的所有字段必须在expected_outputs中**（如`level1_name`）
    - **下游步骤可能需要的标识字段必须包含**（如`level1_name`、`level2_name`等）
    - **用于后续过滤、分组、关联的字段不能遗漏**

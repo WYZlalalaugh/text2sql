@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - Text2SQL 洞察中枢</title>
+    <!-- Element Plus 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <link rel="stylesheet" href="/ui/login_splash.css">
+    <style>
+        .corner-spirit { pointer-events: none; }
+        
+        /* [终极复活区：Final Reclaim] */
+        .spirit-ensemble-wrapper {
+            position: relative;
+            width: 800px;
+            height: 800px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            perspective: 1200px;
+        }
+
+        /* 锁死盒子：包含图片和所有眼睛层 */
+        .trio-lock-box {
+            position: relative;
+            width: 650px;
+            height: 650px;
+            transform-style: preserve-3d;
+            transition: transform 0.1s ease-out;
+        }
+        
+        /* 1. 底图：通过物理羽化蒙版和混合模式实现全透明 */
+        .spirit-base-img {
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: block;
+            /* 重点：物理羽化消框，彻底解决矩形直边 */
+            -webkit-mask-image: radial-gradient(circle, black 40%, transparent 75%);
+            mask-image: radial-gradient(circle, black 40%, transparent 75%);
+            mix-blend-mode: multiply;
+            filter: contrast(1.1) brightness(1.05);
+        }
+        
+        /* 2. 眼神层：在 650px 盒子内的像素级轴心定位 */
+        .eye-overlay {
+            position: absolute;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            /* 关键恢复：中心锚定 */
+            transform: translate(-50%, -50%);
+        }
+        
+        /* [终极补丁 V8：极致对焦对位] */
+        /* 大紫色精灵（妈妈）的眼睛 - 位于图片中央 */
+        .eyes-mama { top: 275px; left: 325px; width: 200px; height: 100px; }
+        /* 粉色小精灵（头顶）的眼睛 - 需要再往上一点 */
+        .eyes-pink { top: 170px; left: 380px; width: 60px; height: 30px; }
+        /* 薄荷绿精灵（左侧抱着的）的眼睛 - 需要往上调 */
+        .eyes-mint { top: 360px; left: 230px; width: 70px; height: 20px; }
+
+        [data-theme="dark"] .spirit-base-img {
+            filter: invert(1) hue-rotate(180deg) brightness(1.2);
+            mix-blend-mode: screen;
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="entry-splash visible">
+            <!-- 全局去色渲染层 -->
+            <div class="ambient-glow"></div>
+            
+            <!-- [四角路径定义区] -->
+            <div class="corner-spirit top-right-spirit secondary-float-slow secondary-character">
+                <svg width="150" height="150" viewBox="-50 -50 150 150">
+                    <defs>
+                        <radialGradient id="grad-mint-final" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" style="stop-color:#B2F2E8" /><stop offset="100%" style="stop-color:#4DB6AC" />
+                        </radialGradient>
+                    </defs>
+                    <path d="M 50,-60 Q -30,-60 -30,0 Q -30,60 50,60" fill="url(#grad-mint-final)" />
+                    <circle cx="-25" cy="20" r="12" fill="#FFF" />
+                    <g transform="translate(0, 0)"><circle r="22" fill="#FFF" /><circle r="11" fill="#1C2026" class="pupil" /></g>
+                </svg>
+            </div>
+            <div class="corner-spirit bottom-left-spirit secondary-float-slow secondary-character">
+                <svg width="150" height="150" viewBox="-70 -70 140 140">
+                    <defs>
+                        <radialGradient id="grad-blue-final" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" style="stop-color:#B3E5FC" /><stop offset="100%" style="stop-color:#64B5F6" />
+                        </radialGradient>
+                    </defs>
+                    <circle r="45" fill="url(#grad-blue-final)" opacity="0.8" />
+                    <circle cx="-55" cy="0" r="8" fill="#FFF" /><circle cx="55" cy="0" r="8" fill="#FFF" />
+                    <g transform="translate(-18, -5)"><circle r="14" fill="#FFF" /><circle r="6" fill="#1C2026" class="pupil" /></g>
+                    <g transform="translate(18, -5)"><circle r="14" fill="#FFF" /><circle r="6" fill="#1C2026" class="pupil" /></g>
+                </svg>
+            </div>
+            <div class="corner-spirit bottom-right-spirit secondary-float-fast secondary-character">
+                <svg width="180" height="180" viewBox="-90 -120 180 140">
+                    <defs>
+                        <radialGradient id="grad-gold-final" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" style="stop-color:#FFE082" /><stop offset="100%" style="stop-color:#FFB74D" />
+                        </radialGradient>
+                    </defs>
+                    <path d="M -20,0 Q -80,20 -80,-40 Q -80,-100 -20,-80" fill="url(#grad-gold-final)" opacity="0.6" />
+                    <path d="M -60,0 Q -60,-100 0,-100 Q 60,-100 60,0 Z" fill="url(#grad-gold-final)" />
+                    <g transform="translate(-25, -60)"><circle r="12" fill="#FFF" /><circle r="6" fill="#1C2026" class="pupil" /></g>
+                    <g transform="translate(25, -60)"><circle r="12" fill="#FFF" /><circle r="6" fill="#1C2026" class="pupil" /></g>
+                </svg>
+            </div>
+
+            <div class="splash-left">
+                <div class="splash-brand">
+                    <svg class="icon" style="width: 18px; height: 18px; margin-right: 4px;"><use xlink:href="#icon-ai-star"></use></svg>
+                    Text2SQL 洞察中枢
+                </div>
+                
+                <!-- [中心复活：对位锁定] -->
+                <div class="spirit-ensemble-wrapper">
+                    <div class="trio-lock-box">
+                        <img src="/ui/assets/spirit_ensemble.png?v=8.0" class="spirit-base-img" alt="Spirit Ensemble" id="spirit-img">
+                        
+                        <!-- 眼神物理对位层 - 结案坐标点 -->
+                        <div class="eye-overlay eyes-mama">
+                            <svg width="156" height="60" viewBox="-78 -30 156 60">
+                                <g transform="translate(-28, -4)"><circle r="23" fill="#FFF" /><circle r="11" fill="#1C2026" class="pupil" /></g>
+                                <g transform="translate(34, -1)"><circle r="21" fill="#FFF" /><circle r="10" fill="#1C2026" class="pupil" /></g>
+                            </svg>
+                        </div>
+                        <div class="eye-overlay eyes-pink">
+                            <svg width="62" height="30" viewBox="-31 -15 62 30">
+                                <g transform="translate(-10, -3)"><circle r="9.5" fill="#FFF" /><circle r="4.5" fill="#1C2026" class="pupil" /></g>
+                                <g transform="translate(10, -3)"><circle r="9.5" fill="#FFF" /><circle r="4.5" fill="#1C2026" class="pupil" /></g>
+                            </svg>
+                        </div>
+                        <div class="eye-overlay eyes-mint">
+                            <svg width="62" height="30" viewBox="-31 -15 62 30">
+                                <g transform="translate(-9, -2)"><circle r="9.5" fill="#FFF" /><circle r="4.5" fill="#1C2026" class="pupil" /></g>
+                                <g transform="translate(9, -2)"><circle r="9.5" fill="#FFF" /><circle r="4.5" fill="#1C2026" class="pupil" /></g>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="splash-right">
+                <div class="splash-form-wrapper">
+                    <!-- 表单守护精灵 -->
+                    <div class="corner-spirit form-spirit secondary-float-slow secondary-character">
+                        <svg width="120" height="100" viewBox="-60 -60 120 100" style="overflow: visible;">
+                            <defs>
+                                <radialGradient id="grad-peach-final" cx="50%" cy="50%" r="50%">
+                                    <stop offset="0%" style="stop-color:#FFB1B1" /><stop offset="100%" style="stop-color:#F06292" />
+                                </radialGradient>
+                            </defs>
+                            <path d="M -40,30 Q -40,-40 0,-45 Q 40,-40 40,30 Z" fill="url(#grad-peach-final)" />
+                            <circle cx="-15" cy="-12" r="14" fill="#FFF" /><circle cx="-15" cy="-12" r="7" fill="#1C2026" class="pupil" />
+                            <circle cx="15" cy="-12" r="14" fill="#FFF" /><circle cx="15" cy="-12" r="7" fill="#1C2026" class="pupil" />
+                            <g transform="translate(-18, 30)"><circle r="8" fill="#FFF" stroke="#F472B6" stroke-width="2" /></g>
+                            <g transform="translate(18, 30)"><circle r="8" fill="#FFF" stroke="#F472B6" stroke-width="2" /></g>
+                        </svg>
+                    </div>
+
+                    <div class="splash-logo"><svg class="icon"><use xlink:href="#icon-ai-star"></use></svg></div>
+                    <h1 class="splash-title">欢迎回来!</h1>
+                    <p class="splash-subtitle">请输入您的企业账户密码</p>
+                    <div class="splash-form" @keyup.enter="login">
+                        <div class="splash-input-group"><label>账户名</label><input type="text" v-model="username" placeholder="account@example.com" class="splash-input"></div>
+                        <div class="splash-input-group"><label>密码</label><input type="password" v-model="password" placeholder="••••••••" class="splash-input"></div>
+                        <div class="splash-actions-inline">
+                            <label class="splash-checkbox"><input type="checkbox" v-model="rememberMe"> 保持登录状态 30 天</label>
+                            <a href="#" class="splash-link">忘记密码?</a>
+                        </div>
+                        <button class="splash-btn primary" @click="login" :class="{ 'loading': loading }"><span v-if="!loading">登 录</span><span v-else>正在验证...</span></button>
+                        <button class="splash-btn ghost" @click="continueAsGuest">作为访客无痕体验</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <svg style="display:none">
+       <symbol id="icon-ai-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M12 2l2.4 7.6 7.6 2.4-7.6 2.4L12 22l-2.4-7.6-7.6-2.4 7.6-2.4L12 2z"></path>
+       </symbol>
+    </svg>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+        const { ElMessage } = ElementPlus;
+
+        createApp({
+            setup() {
+                const username = ref('admin');
+                const password = ref('');
+                const loading = ref(false);
+                const rememberMe = ref(true);
+
+                const login = async () => {
+                    if (!username.value || !password.value) { ElMessage.warning('请输入用户名和密码'); return; }
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/api/auth/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ username: username.value, password: password.value })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            localStorage.removeItem('hasSkippedLogin');
+                            localStorage.setItem('text2sql_app_mode_v1', 'auth');
+                            localStorage.setItem('text2sql_auth_token_v1', data.access_token);
+                            localStorage.setItem('text2sql_auth_user_v1', JSON.stringify(data.user));
+                            window.location.href = '/';
+                        } else { ElMessage.error(data.detail || '登录失败'); }
+                    } catch (e) { ElMessage.error('网络错误'); } finally { loading.value = false; }
+                };
+
+                const continueAsGuest = () => {
+                    localStorage.removeItem('text2sql_auth_token_v1');
+                    localStorage.removeItem('text2sql_auth_user_v1');
+                    localStorage.removeItem('text2sql_auth_state_v1');
+                    localStorage.setItem('text2sql_app_mode_v1', 'guest');
+                    localStorage.setItem('hasSkippedLogin', 'true');
+                    window.location.href = '/';
+                };
+
+                onMounted(() => {
+                    if (localStorage.getItem('theme') === 'dark') {
+                        document.documentElement.setAttribute('data-theme', 'dark');
+                    }
+
+                    document.addEventListener('mousemove', (e) => {
+                        const mouseX = e.clientX;
+                        const mouseY = e.clientY;
+
+                        const glow = document.querySelector('.ambient-glow');
+                        if (glow) { glow.style.transform = `translate(${mouseX - 400}px, ${mouseY - 400}px)`; }
+
+                        const lockBox = document.querySelector('.trio-lock-box');
+                        if (lockBox) {
+                            const rect = lockBox.getBoundingClientRect();
+                            const dx = mouseX - (rect.left + rect.width / 2);
+                            const dy = mouseY - (rect.top + rect.height / 2);
+                            const rx = Math.min(10, Math.max(-10, dy / 65));
+                            const ry = Math.min(12, Math.max(-12, dx / 55));
+                            lockBox.style.transform = `rotateX(${-rx}deg) rotateY(${ry}deg)`;
+                        }
+
+                        const allPupils = document.querySelectorAll('.pupil');
+                        allPupils.forEach(pupil => {
+                            const rect = pupil.getBoundingClientRect();
+                            const dx = mouseX - (rect.left + rect.width / 2);
+                            const dy = mouseY - (rect.top + rect.height / 2);
+                            const dist = Math.hypot(dx, dy);
+                            const angle = Math.atan2(dy, dx);
+                            
+                            const container = pupil.closest('.eyes-pink, .eyes-mint');
+                            const maxP = container ? 4 : 8;
+                            const pDist = Math.min(maxP, dist / 30);
+                            pupil.style.transform = `translate(${Math.cos(angle) * pDist}px, ${Math.sin(angle) * pDist}px)`;
+                        });
+                    });
+                });
+
+                return { username, password, loading, rememberMe, login, continueAsGuest };
+            }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>

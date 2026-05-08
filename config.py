@@ -61,6 +61,15 @@ class DatabaseConfig:
 
 
 @dataclass
+class AuthConfig:
+    """Authentication settings for the web UI."""
+    jwt_secret: str = os.getenv("JWT_SECRET", "text2sql-dev-secret")
+    jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))
+    bootstrap_admin_username: str = os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
+    bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+
+
+@dataclass
 class PathConfig:
     """路径配置"""
     base_dir: str = os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +88,7 @@ class AppConfig:
     finetuned_model: FineTunedModelConfig = field(default_factory=FineTunedModelConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     use_workspace_context: bool = _get_env_bool("USE_WORKSPACE_CONTEXT", False)
     
