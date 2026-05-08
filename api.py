@@ -298,7 +298,22 @@ def _build_step_data(
         else:
             feedback = node_output.get("verification_feedback", "")
             step_data["detail"] = f"验证中: {feedback[:50]}..." if feedback else "验证中..."
-    elif node_name == "metric_loop_planner":
+    # ---------- 指标循环附加字段 ----------
+    if node_name in ("metric_loop_planner", "metric_sql_generator", "metric_executor", "metric_observer"):
+        step_id = (accumulated_state.get("current_step_id") or "") if accumulated_state else ""
+        if step_id:
+            step_data["metric_step_id"] = step_id
+
+        step_status_map = accumulated_state.get("step_status_map") or {} if accumulated_state else {}
+        if step_id and step_id in step_status_map:
+            step_data["metric_step_status"] = step_status_map[step_id]
+
+    if node_name == "metric_loop_planner":
+        plan_nodes = (node_output.get("metric_plan_nodes") or []) if isinstance(node_output, dict) else []
+        if not plan_nodes and accumulated_state:
+            plan_nodes = accumulated_state.get("metric_plan_nodes") or []
+        if plan_nodes:
+            step_data["metric_plan"] = plan_nodes
         decision = node_output.get("loop_decision", {})
         if isinstance(decision, dict):
             decision_type = str(decision.get("decision", "") or "")
@@ -321,15 +336,26 @@ def _build_step_data(
         elif node_output.get("generated_sql"):
             step_data["detail"] = "指标 SQL 已生成"
             step_data["sql"] = node_output.get("generated_sql", "")
+            # 把 SQL 存入 metric_step_sqls 便于前端按 step_id 索引
+            sid = step_data.get("metric_step_id", "")
+            if sid:
+                step_data["metric_step_sql"] = node_output.get("generated_sql", "")
         else:
             step_data["detail"] = "正在生成指标 SQL..."
     elif node_name == "metric_executor":
         if node_output.get("execution_error"):
             err = str(node_output.get("execution_error", ""))
             step_data["detail"] = f"执行失败: {err[:60]}"
+            sid = step_data.get("metric_step_id", "")
+            if sid:
+                step_data["metric_step_error"] = err
         elif isinstance(node_output.get("execution_result"), list):
             rows = node_output.get("execution_result") or []
             step_data["detail"] = f"执行完成，返回 {len(rows)} 条结果"
+            # 最终步骤也附带结果摘要供前端展示
+            sid = step_data.get("metric_step_id", "")
+            if sid:
+                step_data["metric_step_result"] = {"row_count": len(rows)}
         elif isinstance(node_output.get("execution_result"), dict):
             exec_result = node_output.get("execution_result") or {}
             row_count = exec_result.get("row_count")
@@ -340,6 +366,13 @@ def _build_step_data(
                 step_data["detail"] = f"执行完成，{row_count} 行"
             else:
                 step_data["detail"] = "指标 SQL 执行完成"
+            # 附带结果摘要供前端展示
+            sid = step_data.get("metric_step_id", "")
+            if sid:
+                step_data["metric_step_result"] = {
+                    "row_count": row_count,
+                    "output_table": table_name,
+                }
         else:
             step_data["detail"] = "正在执行指标 SQL..."
     elif node_name == "metric_observer":

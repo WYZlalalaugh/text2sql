@@ -119,6 +119,11 @@
                 stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
             </symbol>
+            <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </symbol>
         </defs>
     </svg>
 
@@ -300,6 +305,64 @@
                                         </el-collapse>
                                     </div>
 
+                                    <!-- 指标执行计划 (折叠面板) -->
+                                    <div class="metric-plan-panel" v-if="msg.metricPlan && msg.metricPlan.length > 0">
+                                        <el-collapse>
+                                            <el-collapse-item>
+                                                <template #title>
+                                                    <div style="display:flex;align-items:center;gap:6px;">
+                                                        <svg class="icon" style="color:var(--primary-color)">
+                                                            <use xlink:href="#icon-step"></use>
+                                                        </svg>
+                                                        <span>执行计划</span>
+                                                        <span class="metric-plan-summary">
+                                                            {{ Object.values(msg.metricStepStatuses).filter(s => s === 'succeeded').length }}/{{ msg.metricPlan.length }} 步完成
+                                                        </span>
+                                                    </div>
+                                                </template>
+                                                <div class="metric-steps-list">
+                                                    <template v-for="(node, nIndex) in msg.metricPlan" :key="nIndex">
+                                                    <div v-if="node && node.step_id"
+                                                        class="metric-step-item"
+                                                        :class="'metric-step--' + (msg.metricStepStatuses[node.step_id] || 'pending')">
+                                                        <div class="metric-step-header">
+                                                            <span class="metric-step-status-dot"></span>
+                                                            <span class="metric-step-id">{{ node.step_id }}</span>
+                                                            <span class="metric-step-type">{{ node.intent_type }}</span>
+                                                            <span class="metric-step-desc-text">{{ node.description }}</span>
+                                                        </div>
+                                                        <div class="metric-step-body" v-if="msg.metricStepSqls[node.step_id] || msg.metricStepResults[node.step_id]">
+                                                            <div class="metric-step-sql" v-if="msg.metricStepSqls[node.step_id]">
+                                                                <div class="metric-sql-toggle" @click="toggleMetricSql(msg, node.step_id)">
+                                                                    {{ msg._expandedSqls && msg._expandedSqls[node.step_id] ? '收起 SQL' : '查看 SQL' }}
+                                                                </div>
+                                                                <div class="metric-sql-code-wrap" v-if="msg._expandedSqls && msg._expandedSqls[node.step_id]">
+                                                                    <pre class="metric-sql-code">{{ msg.metricStepSqls[node.step_id] }}</pre>
+                                                                    <button class="metric-sql-copy-btn" @click="copySql(msg.metricStepSqls[node.step_id])" title="复制 SQL">
+                                                                        <svg class="icon" style="width:14px;height:14px;"><use xlink:href="#icon-copy"></use></svg>
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="metric-step-result" v-if="msg.metricStepResults[node.step_id]">
+                                                                <template v-if="msg.metricStepResults[node.step_id].error">
+                                                                    <span class="metric-result-error">{{ msg.metricStepResults[node.step_id].error }}</span>
+                                                                </template>
+                                                                <template v-else>
+                                                                    <span v-if="msg.metricStepResults[node.step_id].row_count" class="metric-result-count">
+                                                                        {{ msg.metricStepResults[node.step_id].row_count }} 行
+                                                                    </span>
+                                                                    <span v-if="msg.metricStepResults[node.step_id].output_table" class="metric-result-table">
+                                                                        → {{ msg.metricStepResults[node.step_id].output_table }}
+                                                                    </span>
+                                                                </template>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </el-collapse-item>
+                                        </el-collapse>
+                                    </div>
+
                                     <!-- 查询规划推理 (Query Reasoning) -->
                                     <div class="ai-reasoning" v-if="msg.reasoning">
                                         <div class="ai-reasoning-title">
@@ -382,8 +445,8 @@
                                     <!-- 动作按钮栏 -->
                                     <div class="action-bar" v-if="msg.sql || msg.pythonCode || hasResultData(msg)">
 
-                                        <!-- 显示 SQL 按钮 -->
-                                        <button class="action-btn" v-if="msg.sql" @click="showSql(msg.sql)">
+                                        <!-- 显示 SQL 按钮（metric query 下隐藏，由历史 SQL 汇总面板替代） -->
+                                        <button class="action-btn" v-if="msg.sql && !msg.metricPlan" @click="showSql(msg.sql)">
                                             <svg class="icon" style="margin-right:4px">
                                                 <use xlink:href="#icon-code"></use>
                                             </svg>

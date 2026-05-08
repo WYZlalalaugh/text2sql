@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, nextTick, onMounted, watch, onBeforeUnmount } = Vue;
+const { createApp, ref, reactive, nextTick, onMounted, watch, onBeforeUnmount, triggerRef } = Vue;
 const { ElMessage } = ElementPlus;
 
 const app = createApp({
@@ -200,20 +200,15 @@ const app = createApp({
             currentChartReasoning.value = reasoning;
             chartDialogVisible.value = true;
 
-            // 使用 setTimeout 确保 Dialog DOM 已渲染
-            setTimeout(() => {
-                try {
-                    // 关键修复：移除 Vue 的响应式代理，传递纯 JSON 对象给 Vega
-                    const rawSpec = JSON.parse(JSON.stringify(spec));
-
-                    // 强制让图表充满容器
-                    rawSpec.width = "container";
-                    rawSpec.height = "container";
-                    rawSpec.autosize = { type: "fit", contains: "padding" };
-
-                    // 确保容器存在
-                    const container = document.querySelector('#dialog-chart-container');
-                    if (container) {
+            // 等待 Dialog DOM 渲染完成后嵌入图表
+            const tryEmbed = (retries = 0) => {
+                const container = document.querySelector('#dialog-chart-container');
+                if (container) {
+                    try {
+                        const rawSpec = JSON.parse(JSON.stringify(spec));
+                        rawSpec.width = "container";
+                        rawSpec.height = "container";
+                        rawSpec.autosize = { type: "fit", contains: "padding" };
                         vegaEmbed('#dialog-chart-container', rawSpec, {
                             actions: false,
                             renderer: 'svg'
@@ -221,13 +216,17 @@ const app = createApp({
                             console.error('Vega Embed Error:', e);
                             ElMessage.error('图表渲染出错');
                         });
-                    } else {
-                        console.error('Chart container not found');
+                    } catch (e) {
+                        console.error('Chart view error:', e);
                     }
-                } catch (e) {
-                    console.error('Chart view error:', e);
+                } else if (retries < 20) {
+                    setTimeout(() => tryEmbed(retries + 1), 50);
+                } else {
+                    console.error('Chart container not found after retries');
+                    ElMessage.error('图表容器未就绪');
                 }
-            }, 100);
+            };
+            nextTick(() => setTimeout(() => tryEmbed(), 100));
         };
 
         // 推荐问题（动态获取）
@@ -257,7 +256,12 @@ const app = createApp({
             clarificationSections: Array.isArray(msg?.clarificationSections) ? msg.clarificationSections : [],
             isStreaming: false,
             isChartLoading: false,
-            isReplayLoading: false
+            isReplayLoading: false,
+            metricPlan: msg?.metricPlan || null,
+            metricStepStatuses: msg?.metricStepStatuses || {},
+            metricStepSqls: msg?.metricStepSqls || {},
+            metricStepResults: msg?.metricStepResults || {},
+            _expandedSqls: msg?._expandedSqls || {}
         });
         const normalizeConversationSummary = (thread = {}) => ({
             id: thread.id || createThreadId(),
@@ -434,7 +438,12 @@ const app = createApp({
                 isTruncated: Boolean(msg.isTruncated),
                 isStreaming: false,
                 isChartLoading: false,
-                isReplayLoading: false
+                isReplayLoading: false,
+                metricPlan: msg.metricPlan || null,
+                metricStepStatuses: msg.metricStepStatuses || {},
+                metricStepSqls: msg.metricStepSqls || {},
+                metricStepResults: msg.metricStepResults || {},
+                _expandedSqls: msg._expandedSqls || {}
             };
         };
 
@@ -1054,6 +1063,22 @@ const app = createApp({
             sendMessage(draft);
         };
 
+        const toggleMetricSql = (msg, stepId) => {
+            if (!msg._expandedSqls) {
+                msg._expandedSqls = {};
+            }
+            msg._expandedSqls[stepId] = !msg._expandedSqls[stepId];
+        };
+
+        const copySql = (sql) => {
+            if (!sql) return;
+            navigator.clipboard.writeText(sql).then(() => {
+                ElMessage.success('SQL 已复制');
+            }).catch(() => {
+                ElMessage.error('复制失败');
+            });
+        };
+
         // 发送消息
         const handleSend = () => {
             sendMessage(inputMessage.value);
@@ -1126,7 +1151,12 @@ const app = createApp({
                 reasoning: '',
                 reflection: '',
                 isChartLoading: false,
-                isReplayLoading: false
+                isReplayLoading: false,
+                metricPlan: null,
+                metricStepStatuses: {},
+                metricStepSqls: {},
+                metricStepResults: {},
+                _expandedSqls: {}
             });
             const tempMessage = messages.value[messages.value.length - 1];
 
@@ -1194,6 +1224,77 @@ const app = createApp({
                                         tempMessage.sql = event.sql;
                                     }
 
+                                    // 指标计划数据：首次收到 metric_plan 时初始化计划面板
+                                    if (event.metric_plan && Array.isArray(event.metric_plan) && event.metric_plan.length > 0) {
+                                        console.log('[metric] 收到 metric_plan 事件，节点数:', event.metric_plan.length, '当前节点:', event.node);
+                                        if (!tempMessage.metricPlan) {
+                                            // 首次初始化，过滤无效节点
+                                            const validNodes = event.metric_plan.filter(n => n && n.step_id);
+                                            tempMessage.metricPlan = validNodes;
+                                            tempMessage.metricStepStatuses = {};
+                                            tempMessage.metricStepSqls = {};
+                                            tempMessage.metricStepResults = {};
+                                            validNodes.forEach((node) => {
+                                                tempMessage.metricStepStatuses[node.step_id] = 'pending';
+                                            });
+                                            triggerRef(messages);
+                                            console.log('[metric] metricPlan 已初始化，步骤状态:', JSON.stringify(tempMessage.metricStepStatuses));
+                                        } else {
+                                            // 计划更新（如调整后）：保留已有步骤进度，新步骤标记 pending
+                                            const validNodes = event.metric_plan.filter(n => n && n.step_id);
+                                            tempMessage.metricPlan = validNodes;
+                                            validNodes.forEach((node) => {
+                                                if (!tempMessage.metricStepStatuses[node.step_id]) {
+                                                    tempMessage.metricStepStatuses[node.step_id] = 'pending';
+                                                }
+                                            });
+                                            triggerRef(messages);
+                                            console.log('[metric] metricPlan 已更新（计划调整），保留已有进度');
+                                        }
+                                    }
+
+                                    // 指标步骤关联：将事件映射到具体计划步骤
+                                    const mSid = event.metric_step_id || '';
+                                    if (mSid && tempMessage.metricPlan) {
+                                        console.log('[metric] 步骤事件:', event.node, 'step_id:', mSid, 'status:', event.metric_step_status);
+                                        // metric_sql_generator → 标记 running + 存 SQL
+                                        if (event.node === 'metric_sql_generator') {
+                                            tempMessage.metricStepStatuses[mSid] = 'running';
+                                            if (event.metric_step_sql || event.sql) {
+                                                tempMessage.metricStepSqls[mSid] = event.metric_step_sql || event.sql;
+                                            }
+                                            triggerRef(messages);
+                                        }
+                                        // metric_executor → 更新结果摘要
+                                        if (event.node === 'metric_executor') {
+                                            if (event.metric_step_result) {
+                                                tempMessage.metricStepResults[mSid] = event.metric_step_result;
+                                            }
+                                            if (event.metric_step_error) {
+                                                tempMessage.metricStepStatuses[mSid] = 'failed';
+                                                tempMessage.metricStepResults[mSid] = { error: event.metric_step_error };
+                                            }
+                                            triggerRef(messages);
+                                        }
+                                        // metric_observer → 更新步骤状态
+                                        if (event.node === 'metric_observer') {
+                                            const obsStatus = event.metric_step_status || '';
+                                            if (obsStatus === 'succeeded') {
+                                                tempMessage.metricStepStatuses[mSid] = 'succeeded';
+                                            } else if (obsStatus.startsWith('failed')) {
+                                                tempMessage.metricStepStatuses[mSid] = 'failed';
+                                            } else if (obsStatus === 'running') {
+                                                tempMessage.metricStepStatuses[mSid] = 'running';
+                                            }
+                                            triggerRef(messages);
+                                        }
+                                        // metric_loop_planner 在重试时 → 标记 running
+                                        if (event.node === 'metric_loop_planner' && tempMessage.metricStepStatuses[mSid] === 'failed') {
+                                            tempMessage.metricStepStatuses[mSid] = 'running';
+                                            triggerRef(messages);
+                                        }
+                                    }
+
                                     // 处理流式推理和反思
                                     if (event.reasoning) {
                                         typeWriter(tempMessage, 'reasoning', event.reasoning);
@@ -1235,6 +1336,7 @@ const app = createApp({
                                     }
 
                                     tempMessage.isStreaming = false;
+                                    triggerRef(messages);
                                 } else if (event.type === 'error') {
                                     // 错误
                                     tempMessage.content = '系统错误：' + event.message;
@@ -1429,7 +1531,9 @@ const app = createApp({
             generateChart,
             toggleClarificationOption,
             clearClarificationSelection,
-            submitClarificationSelection
+            submitClarificationSelection,
+            toggleMetricSql,
+            copySql
         };
     }
 });
