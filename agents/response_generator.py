@@ -340,8 +340,11 @@ def generate_query_response(state: AgentState, llm_client) -> Dict[str, Any]:
         if result_count > 5:
             reply += f"\n... 还有 {result_count - 5} 条结果"
     
-    # 附加 SQL
-    if generated_sql:
+    intent_type = state.get("intent_type", IntentType.CHITCHAT)
+    has_metric_plan = bool(state.get("metric_plan_nodes"))
+
+    # metric query 下不附加 SQL（由前端历史汇总面板展示）
+    if generated_sql and not has_metric_plan:
         reply += f"\n\n---\n执行的 SQL：\n```sql\n{generated_sql}\n```"
     
     # 限制前端数据量，避免传输过大的数据
