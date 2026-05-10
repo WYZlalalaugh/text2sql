@@ -1,6 +1,6 @@
-# Text2SQL 智能体系统
+# Text2SQL 洞察中枢
 
-基于 LangGraph 构建的教育指标体系 Text2SQL 智能体，支持意图识别、歧义澄清和 SQL 生成。
+基于 LangGraph 构建的教育指标体系 Text2SQL 智能体，支持意图识别、歧义澄清、多步迭代规划与 SQL 生成，提供 Web UI 和 CLI 双界面。
 
 ---
 
@@ -8,195 +8,167 @@
 
 ```mermaid
 flowchart TD
-    subgraph 输入处理
-        A[👤 用户输入] --> B[🔍 向量检索]
-        B --> C[🧠 意图分类Agent]
+    A[👤 用户输入] --> B[🧠 意图分类]
+    B --> C{意图类型?}
+
+    C -->|闲聊| D[💬 直接回复]
+    C -->|指标定义| E[📖 查询指标体系]
+    C -->|简单查询| F[📝 上下文组装 → SQL 生成 → 执行]
+    C -->|指标分析| G[🔎 歧义检测]
+
+    G --> H{有歧义?}
+    H -->|是| I[❓ 生成澄清选项]
+    I --> J[👤 用户选择]
+    J --> G
+    H -->|否| K[📋 迭代规划]
+
+    subgraph Metric Loop 迭代循环
+        K --> L[🤖 SQL 生成]
+        L --> M[💾 执行查询]
+        M --> N[👁 观察评估]
+        N --> O{是否完成?}
+        O -->|否| K
+        O -->|是| P[📊 响应生成]
     end
-    
-    subgraph 意图路由
-        C --> D{意图类型?}
-        D -->|chitchat| E[💬 直接回复]
-        D -->|metric_definition| F[📖 返回指标定义]
-        D -->|simple_query| G[📝 上下文组装]
-        D -->|metric_query| H[🔎 歧义检测Agent]
-    end
-    
-    subgraph 歧义处理
-        H --> I{有歧义?}
-        I -->|是| J[❓ 生成澄清问题]
-        J --> K[👤 用户回复]
-        K --> H
-        I -->|否| G
-    end
-    
-    subgraph SQL生成执行
-        G --> L[🤖 微调模型生成SQL]
-        L --> M[💾 执行SQL]
-        M --> N[📊 响应生成]
-    end
-    
-    subgraph 输出
-        E --> O[✅ 返回结果]
-        F --> O
-        N --> O
-    end
+
+    D --> Q[✅ 返回结果]
+    E --> Q
+    F --> Q
+    P --> Q
 ```
 
 ---
 
-## 意图类型说明
+## 双路径查询架构
 
-| 意图类型 | 说明 | 示例 |
-|---------|------|------|
-| `chitchat` | 闲聊/帮助 | "你好"、"帮助" |
-| `metric_definition` | 询问指标定义 | "什么是数字素养" |
-| `simple_query` | 简单数据查询 | "有多少学校" |
-| `metric_query` | 指标相关查询 | "基础设施情况" |
+系统根据意图类型路由到两条不同的处理路径：
+
+| 路径 | 适用意图 | 流程 | 特点 |
+|------|---------|------|------|
+| **VALUE_QUERY** | 简单数据查询 | 分类 → 规划 → 上下文组装 → SQL生成 → 执行 → 响应 | 单次 SQL 执行 |
+| **METRIC_QUERY** | 复杂指标分析 | 分类 → 歧义检测 → 迭代规划 → SQL生成 → 执行 → 观察 → （循环） → 响应 | 多步迭代，支持临时表 |
+
+---
+
+## Agent 清单
+
+| Agent | 文件 | 职责 |
+|-------|------|------|
+| Intent Classifier | `intent_classifier.py` | 识别用户意图（闲聊/指标定义/简单查询/指标分析） |
+| Ambiguity Checker | `ambiguity_checker.py` | 检测查询歧义，生成澄清选项 |
+| Metric Loop Planner | `metric_loop_planner.py` | 拆解复杂指标任务为可执行步骤 |
+| Context Assembler | `context_assembler.py` | 组装 SQL 生成所需的上下文信息 |
+| SQL Generator | `sql_generator.py` | 生成可执行的 SQL 查询 |
+| SQL Executor | `sql_executor.py` | 执行 SQL 并返回结果 |
+| SQL Corrector | `sql_corrector.py` | SQL 执行失败时自动修正 |
+| Metric SQL Generator | `metric_sql_generator.py` | 为指标分析步骤生成 SQL |
+| Metric Executor | `metric_executor.py` | 执行指标分析步骤的 SQL |
+| Metric Observer | `metric_observer.py` | 评估执行结果，决定继续/修正/完成 |
+| Response Generator | `response_generator.py` | 将查询结果转换为自然语言回复 |
+| Chart Generator | `chart_generator.py` | 基于 Vega-Lite 生成数据可视化图表 |
+| Verifier | `verifier.py` | 验证执行结果的合理性 |
+
+---
+
+## 项目结构
+
+```
+text2sql/
+├── api.py                  # FastAPI 服务（SSE 流式响应、会话管理）
+├── main.py                 # CLI 交互入口
+├── graph.py                # LangGraph 工作流定义与节点连接
+├── state.py                # AgentState 类型定义
+├── config.py               # 运行时配置（从 .env 加载）
+├── runtime.py              # LLM / Embedding 客户端工厂
+├── runtime_bootstrap.py    # 运行时初始化
+├── requirements.txt        # Python 依赖
+├── agents/                 # 各 Agent 节点实现（工厂模式）
+├── prompts/                # Prompt 模板与领域配置
+├── tools/                  # 数据库访问、日志、Schema 工具
+├── ui/                     # 前端（Vue 3 + Element Plus）
+│   ├── index.html
+│   ├── style.css
+│   └── script.js
+├── 基教指标.json             # 教育指标体系定义
+├── test_number.json         # 数据库 Schema 定义
+└── tests/                   # 测试文件
+```
+
+---
+
+## 前端功能
+
+- **对话式交互**：自然语言查询，流式显示推理步骤与结果
+- **执行计划面板**：可视化展示指标分析的多步执行计划、SQL、状态
+- **数据查看**：表格弹窗展示查询结果，支持大数据量分页与回放
+- **图表生成**：基于 Vega-Lite 自动生成数据可视化
+- **建模视图**：展示指标体系层级结构（一级/二级指标，可折叠）
+- **数据库视图**：展示当前数据库 Schema 定义
+- **多会话管理**：支持对话历史、线程切换、草稿保存
+- **深色/浅色主题**切换
 
 ---
 
 ## 快速开始
 
 ### 1. 安装依赖
+
 ```bash
-cd d:\text2sql
+cd text2sql
 pip install -r requirements.txt
 ```
 
 ### 2. 配置环境变量
+
 编辑 `.env` 文件：
+
 ```env
 # LLM 配置
 LLM_API_BASE=http://localhost:11434/v1
 LLM_MODEL_NAME=qwen2.5:7b
 
-# Embedding 配置
-EMBEDDING_API_BASE=http://localhost:11434
-EMBEDDING_MODEL_NAME=bge-m3:latest
-
-# 微调模型
-FINETUNED_API_BASE=http://localhost:11434
-FINETUNED_MODEL_NAME=text2sql-finetuned
-
 # MySQL
 DB_HOST=localhost
+DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=your_password
 DB_NAME=education_metrics
 ```
 
 ### 3. 运行
+
 ```bash
+# Web UI 模式
+python api.py
+
+# CLI 模式
 python main.py
 ```
 
-## Local Operator Runbook (MAZE Architecture)
+### 4. 访问
 
-This section covers how to start the full M.A.Z.E stack (Cube.js semantic server + Text2SQL API) and verify functionality.
+浏览器打开 `http://localhost:8000`
 
-### Prerequisites
+---
 
-- Python 3.10+ with `pip install -r requirements.txt` completed
-- MySQL running on `localhost:3306`, database `test_number`, credentials in `text2sql/.env`
-- Node.js + npm available (for Cube.js dev server)
+## API 端点
 
-### Chart & Replay Compatibility
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/chat/stream` | POST | 流式对话（SSE） |
+| `/api/chat` | POST | 非流式对话 |
+| `/api/chart` | POST | 生成数据图表 |
+| `/api/replay-data` | POST | 回放查询数据 |
+| `/api/reset` | POST | 重置会话 |
+| `/api/metrics` | GET | 获取指标体系数据 |
+| `/api/schema` | GET | 获取数据库 Schema |
+| `/api/health` | GET | 健康检查 |
 
-- **Replay**: All legacy SQL trajectories remain playable. Semantic trajectories require `USE_SEMANTIC_METRIC_QUERY=true` for full fidelity replay of the analysis step.
-- **Chart**: The frontend supports both standard SQL result sets and complex analysis results (JSON) from the semantic path.
+---
 
-### Startup Sequence
+## 技术栈
 
-**Step 1 — Start Cube semantic server**
-
-```bash
-cd "D:\text2sql v1.3\my-cube-project"
-npm run dev
-```
-
-Wait until the Cube dev server is ready (it will print a `🚀 Cube API` line), then verify:
-
-```bash
-curl http://localhost:4000/cubejs-api/v1/meta -H "Authorization: Bearer maze_dev_secret"
-# Expected: JSON with cubes: [Questions, SchoolAnswers, Schools]
-```
-
-**Step 2 — Start Text2SQL API**
-
-```bash
-cd "D:\text2sql v1.3\text2sql"
-python api.py
-```
-
-Verify Health:
-
-```bash
-curl http://localhost:8000/api/health
-# Expected: {"status":"ok"}
-```
-
-**Step 3 — Confirm Semantic Flags in `.env`**
-
-The file `D:\text2sql v1.3\text2sql\.env` must contain these active flags for the semantic path:
-
-| Flag | Description |
-|------|-------------|
-| `USE_SEMANTIC_METRIC_QUERY` | Routes metric-heavy intents to the MAZE semantic engine |
-| `USE_CONSTRAINED_PLANNER` | Forces the planner to use semantic cube definitions instead of raw SQL |
-| `USE_CUBE_SCHEMA_SOURCE` | Fetches schema context from Cube.js instead of static files |
-| `USE_DUCKDB_EXECUTOR` | Enables local multi-step analysis via DuckDB |
-| `CUBE_API_SECRET` | Auth token for the Cube.js backend |
-
-### Rollout Smoke Tests
-
-**METRIC_QUERY** (MAZE semantic path — triggers clarification or full analysis):
-
-```bash
-curl -s -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d "{\"message\":\"对比各省基础设施综合得分排名\",\"session_id\":\"smoke-metric\",\"workspace_id\":\"default\"}"
-# Expected: HTTP 200, intent_type="IntentType.METRIC_QUERY"
-```
-
-**VALUE_QUERY** (legacy SQL path — returns SQL + result count):
-
-```bash
-curl -s -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d "{\"message\":\"北京市学校数量是多少\",\"session_id\":\"smoke-value\",\"workspace_id\":\"default\"}"
-# Expected: HTTP 200, intent_type="IntentType.VALUE_QUERY", sql field non-null
-```
-
-### Rollback and Restore
-
-**Emergency Rollback (Disable MAZE, Revert to Legacy)**
-
-1. Open `text2sql/.env`.
-2. Set `USE_SEMANTIC_METRIC_QUERY=false` and `USE_CONSTRAINED_PLANNER=false`.
-3. Restart the API: `python api.py`.
-4. Both query types will now run through the legacy SQL path without DuckDB or Cube.
-
-**Restoration (Re-enable MAZE)**
-
-1. Open `text2sql/.env`.
-2. Set `USE_SEMANTIC_METRIC_QUERY=true` and `USE_CONSTRAINED_PLANNER=true`.
-3. Restart the API: `python api.py`.
-
-### Failure Handling Policy
-
-| Scenario | Behavior |
-|----------|----------|
-| Cube server offline | Schema source degrades to static metadata; semantic execution returns `语义执行降级: Cube unreachable...`; API stays HTTP 200 |
-| DuckDB step failure | Last successful step's rows preserved in `analysis_result` via `DuckDBExecutorError.partial_artifacts`; `analysis_error` surfaced as message |
-| Partial artifacts on disk | Parquet spill files at `.sisyphus/tmp/duckdb/<workspace>/<request>/` persist until cleanup |
-| User-visible partial results | Only returned when `analysis_result` is non-empty and verification passed; otherwise `analysis_error` is shown |
-
-### Cube MySQL Driver Note
-
-Cube 1.6.23 requires a manual patch for modern MySQL auth. If you run `npm install` in `my-cube-project`, re-apply the patch in `node_modules/@cubejs-backend/mysql-driver/dist/src/MySqlDriver.js`:
-
-```js
-// Line ~3: change 'mysql' to 'mysql2'
-const mysql = require('mysql2');
-```
-
+- **后端**：Python 3.10+ / LangGraph / LangChain / FastAPI / PyMySQL
+- **前端**：Vue 3 / Element Plus / Marked.js / Vega-Lite
+- **LLM**：兼容 OpenAI API 的本地/云端模型（默认 Ollama + Qwen2.5）
+- **数据库**：MySQL 8.0
