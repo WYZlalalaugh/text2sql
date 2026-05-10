@@ -1,0 +1,382 @@
+/* ==============================================
+   LOGIN SPLASH PAGE STYLES
+   ============================================== */
+
+:root {
+    --bg-app: #ffffff;
+    --text-primary: #1c2026;
+    --text-secondary: #606266;
+    --border-light: #ebeef5;
+    --accent-primary: #7C5DE2;
+}
+
+[data-theme="dark"] {
+    --bg-app: #0c0c0f;
+    --text-primary: #e5eaf3;
+    --text-secondary: #a8abb2;
+    --border-light: #333336;
+    --accent-primary: #8B6EF5;
+}
+
+body, html {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+}
+
+.entry-splash {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    background: var(--bg-app);
+    position: relative; /* 为全局精灵定位 */
+    overflow: hidden;
+}
+
+.splash-left {
+    flex: 1;
+    background: #e8e9eb;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    overflow: hidden;
+}
+
+[data-theme="dark"] .splash-left { background: #1a1b1e; }
+
+.pet-float {
+    animation: blobFloat 4s ease-in-out infinite;
+}
+
+@keyframes blobFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-15px); }
+}
+
+.humanoid-head {
+    transition: transform 0.1s ease-out;
+}
+
+.humanoid-body {
+    transform-origin: center bottom;
+    transition: transform 0.15s ease-out;
+}
+
+/* 背景渲染增强 */
+.ambient-glow {
+    position: absolute;
+    width: 800px;
+    height: 800px;
+    background: radial-gradient(circle, rgba(124, 93, 226, 0.15) 0%, rgba(124, 93, 226, 0) 70%);
+    pointer-events: none;
+    z-index: 0;
+    transition: transform 0.3s ease-out;
+}
+
+[data-theme="dark"] .ambient-glow {
+    background: radial-gradient(circle, rgba(139, 110, 245, 0.12) 0%, rgba(139, 110, 245, 0) 70%);
+}
+
+.data-orbs {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.secondary-character {
+    transition: transform 0.1s ease-out;
+    filter: drop-shadow(0 10px 20px rgba(0,0,0,0.05));
+    cursor: pointer;
+}
+
+.secondary-float-fast { animation: blobFloat 3s ease-in-out infinite; }
+.secondary-float-slow { animation: blobFloat 6s ease-in-out infinite; }
+
+.observer-body { fill: #9D85F0; }
+.helper-body { fill: #F0A585; }
+
+.pet-float {
+    animation: blobFloat 4s ease-in-out infinite;
+    z-index: 2;
+}
+
+.humanoid-hand {
+    transition: transform 0.2s ease-out;
+}
+
+.interactive-pets {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 30px 50px rgba(0,0,0,0.1));
+}
+
+.pupil {
+    transition: transform 0.05s linear;
+}
+
+.eye-blink {
+    animation: blink 4s infinite;
+}
+
+@keyframes blink {
+    0%, 90%, 100% { transform: scaleY(1); }
+    95% { transform: scaleY(0.1); }
+}
+
+.splash-brand {
+    position: absolute;
+    top: 64px; /* 下移一些，给小精灵舞台 */
+    left: 40px;
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255,255,255,0.7);
+    padding: 8px 16px;
+    border-radius: 20px;
+    backdrop-filter: blur(10px);
+    z-index: 20;
+    transition: transform 0.3s ease;
+}
+
+/* 角落精灵：萌系升级版 */
+.corner-spirit {
+    position: absolute;
+    z-index: 10;
+    pointer-events: none;
+    transition: transform 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.secondary-character svg {
+    filter: drop-shadow(0 15px 30px rgba(0,0,0,0.1));
+}
+
+.form-spirit {
+    position: absolute;
+    top: -45px; /* 坐在卡片顶边上 */
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+}
+
+.top-right-spirit {
+    top: 40px;
+    right: 50px;
+}
+
+.bottom-right-spirit {
+    bottom: 50px;
+    right: 60px;
+}
+
+.bottom-left-spirit {
+    bottom: 60px;
+    left: 50px;
+}
+
+/* 角色色彩多样化定义 (莫兰迪/霓虹色系) */
+.spirit-clinger-body { fill: url(#grad-peach); } /* 表单守护者: 温暖桃红 */
+.spirit-peeker-body { fill: url(#grad-mint); }   /* 右上窥视者: 敏捷薄荷 */
+.spirit-blobby-body { fill: url(#grad-blue); opacity: 0.8;} /* 左下云朵: 深度天空蓝 */
+.spirit-helper-body { fill: url(#grad-gold); }   /* 右下助手: 活力金盏花 */
+.spirit-hand { fill: #FFF; stroke: rgba(0, 0, 0, 0.05); stroke-width: 1.5; }
+
+/* 响应式调整: 移动端隐藏部分角落精灵 */
+@media (max-width: 768px) {
+    .corner-spirit { display: none; }
+    .form-spirit { display: block; }
+}
+
+[data-theme="dark"] .splash-brand { background: rgba(0,0,0,0.5); }
+
+.splash-right {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: var(--bg-app);
+}
+
+.splash-form-wrapper {
+    background: var(--bg-card);
+    padding: 48px;
+    border-radius: 24px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.05);
+    width: 100%;
+    max-width: 440px;
+    border: 1px solid rgba(124, 93, 226, 0.1);
+    backdrop-filter: blur(20px);
+    position: relative;
+    overflow: visible; /* 允许精灵探头 */
+}
+
+.splash-logo {
+    color: var(--text-primary);
+    font-size: 32px;
+    margin-bottom: 24px;
+    align-self: center;
+}
+
+.splash-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    margin-top: 0;
+    align-self: center;
+    text-align: center;
+}
+
+.splash-subtitle {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 40px;
+    text-align: center;
+    margin-top: 0;
+    align-self: center;
+}
+
+.splash-form {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.splash-input-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.splash-input {
+    width: 100%;
+    padding: 12px 0;
+    border: none;
+    border-bottom: 1px solid var(--border-light);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-family: inherit;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+    border-radius: 0;
+}
+
+.splash-input:-webkit-autofill,
+.splash-input:-webkit-autofill:hover, 
+.splash-input:-webkit-autofill:focus, 
+.splash-input:-webkit-autofill:active{
+    -webkit-box-shadow: 0 0 0 30px var(--bg-app) inset !important;
+    -webkit-text-fill-color: var(--text-primary) !important;
+    transition: background-color 5000s ease-in-out 0s;
+}
+
+.splash-input:focus {
+    outline: none;
+    border-bottom: 1px solid var(--accent-primary);
+}
+
+.splash-actions-inline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.splash-actions-inline label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.splash-link {
+    color: var(--accent-primary);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.splash-btn {
+    width: 100%;
+    padding: 14px;
+    border-radius: 20px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.splash-btn.primary {
+    background: #1e1e24;
+    color: #fff;
+    margin-top: 8px;
+}
+
+[data-theme="dark"] .splash-btn.primary {
+    background: #fff;
+    color: #000;
+}
+
+.splash-btn.primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.splash-btn.primary.loading {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.splash-btn.ghost {
+    background: #f4f4f5;
+    border: 1px solid var(--border-light);
+    color: var(--text-primary);
+    margin-top: 4px;
+}
+
+[data-theme="dark"] .splash-btn.ghost {
+    background: #18181b;
+}
+
+.splash-btn.ghost:hover {
+    background: #e4e4e7;
+}
+
+[data-theme="dark"] .splash-btn.ghost:hover {
+    background: #27272a;
+}
+
+.google-icon {
+    width: 18px;
+    height: 18px;
+}
+
+.icon {
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.15em;
+    fill: currentColor;
+    overflow: hidden;
+}

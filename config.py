@@ -3,14 +3,22 @@ Text2SQL 智能体系统配置文件
 """
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 # 自动加载 .env 文件
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _ = load_dotenv(os.path.join(_BASE_DIR, ".env"))
 except ImportError:
     pass  # python-dotenv 未安装时跳过
+
+
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    """读取布尔环境变量"""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -53,6 +61,15 @@ class DatabaseConfig:
 
 
 @dataclass
+class AuthConfig:
+    """Authentication settings for the web UI."""
+    jwt_secret: str = os.getenv("JWT_SECRET", "text2sql-dev-secret")
+    jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))
+    bootstrap_admin_username: str = os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
+    bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+
+
+@dataclass
 class PathConfig:
     """路径配置"""
     base_dir: str = os.path.dirname(os.path.abspath(__file__))
@@ -71,11 +88,17 @@ class AppConfig:
     finetuned_model: FineTunedModelConfig = field(default_factory=FineTunedModelConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     paths: PathConfig = field(default_factory=PathConfig)
+    use_workspace_context: bool = _get_env_bool("USE_WORKSPACE_CONTEXT", False)
     
     # 向量检索配置
     vector_top_k: int = 5
     similarity_threshold: float = 0.7
+
+    def refresh_feature_flags(self):
+        """按需从环境变量刷新功能开关和相关运行时配置"""
+        self.use_workspace_context = _get_env_bool("USE_WORKSPACE_CONTEXT", False)
 
 
 # 全局配置实例

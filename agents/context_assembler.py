@@ -1,35 +1,18 @@
 """
 上下文组装节点 - 使用 Query Planner 输出和 PromptBuilder 组装 Prompt
 """
+# pyright: reportDeprecated=false, reportUnknownParameterType=false, reportMissingTypeArgument=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnnecessaryComparison=false
 import json
-import os
-from typing import Dict, Any, List, Optional
+from typing import cast, Optional
 
 from state import AgentState, IntentType
-from config import config
 from prompts.prompt_builder import PromptBuilder
 from prompts.domain_config import EducationDomain, DomainConfig
+from prompts.sql_samples import SQLSampleLibrary
+from tools.schema_provider import get_schema_provider
 
 
-def load_schema() -> Dict[str, Any]:
-    """加载数据库 Schema"""
-    schema_path = config.paths.schema_path
-    if os.path.exists(schema_path):
-        with open(schema_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-
-def load_full_metrics() -> Dict[str, Any]:
-    """加载完整指标体系"""
-    metrics_path = config.paths.metrics_path
-    if os.path.exists(metrics_path):
-        with open(metrics_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-
-def filter_metrics_by_selection(full_metrics: Dict, selected_metrics: List[str]) -> str:
+def filter_metrics_by_selection(full_metrics: dict[str, object], selected_metrics: list[str]) -> str:
     """
     根据 Query Planner 选择的指标，从全量指标中提取相关部分
     
@@ -54,11 +37,11 @@ def filter_metrics_by_selection(full_metrics: Dict, selected_metrics: List[str])
         
         # 在全量指标中查找
         if level1_name in full_metrics:
-            level1_data = full_metrics[level1_name]
+            level1_data = cast(dict[str, object], full_metrics[level1_name])
             
             if level2_name:
                 # 二级指标
-                level2_dict = level1_data.get("二级指标", {})
+                level2_dict = cast(dict[str, dict[str, object]], level1_data.get("二级指标", {}))
                 if level2_name in level2_dict:
                     filtered_parts.append(f"### {level1_name} > {level2_name}")
                     filtered_parts.append(f"定义: {level2_dict[level2_name].get('二级指标解释', '')}")
@@ -67,7 +50,7 @@ def filter_metrics_by_selection(full_metrics: Dict, selected_metrics: List[str])
                 filtered_parts.append(f"### {level1_name}")
                 filtered_parts.append(f"定义: {level1_data.get('一级指标解释', '')}")
                 # 列出其下的二级指标
-                level2_dict = level1_data.get("二级指标", {})
+                level2_dict = cast(dict[str, dict[str, object]], level1_data.get("二级指标", {}))
                 if level2_dict:
                     filtered_parts.append("包含二级指标:")
                     for l2_name, l2_info in level2_dict.items():
@@ -87,9 +70,22 @@ def get_domain_config() -> DomainConfig:
     return EducationDomain()
 
 
-def extract_user_instructions(state: AgentState) -> List[str]:
+def _parse_json_object(text: str) -> Optional[dict[str, object]]:
+    """Best-effort parse for provider text that may still be JSON."""
+    if not text:
+        return None
+
+    try:
+        parsed = cast(object, json.loads(text))
+    except json.JSONDecodeError:
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+def extract_user_instructions(state: AgentState) -> list[str]:
     """从状态中提取用户指令"""
-    instructions = []
+    instructions: list[str] = []
     
     clarification_response = state.get("clarification_response")
     if clarification_response:
@@ -103,7 +99,7 @@ def extract_user_instructions(state: AgentState) -> List[str]:
     return instructions
 
 
-def create_context_assembler(prompt_builder: PromptBuilder = None):
+def create_context_assembler(prompt_builder: Optional[PromptBuilder] = None):
     """
     创建上下文组装节点
     
@@ -111,67 +107,99 @@ def create_context_assembler(prompt_builder: PromptBuilder = None):
         prompt_builder: 提示词构建器（可选，如果未提供则内部创建）
     """
     
-    def context_assembler_node(state: AgentState) -> Dict[str, Any]:
+    def context_assembler_node(state: AgentState) -> dict[str, object]:
         """
         上下文组装节点
         
         接收 Query Planner 的输出，构建精简的 Prompt
+        根据意图类型选择不同的 Prompt 构建策略:
+        - METRIC_QUERY: 使用简单 SQL Prompt (只拉取数据, 不做复杂计算)
+        - 其他: 使用原有的 SQL 生成 Prompt
         """
         user_query = state.get("user_query", "")
         refined_intent = state.get("refined_intent") or user_query
+        intent_type = state.get("intent_type")
         
         # 获取 Query Planner 的输出
-        query_plan = state.get("query_plan", {})
-        reasoning_plan = state.get("reasoning_plan", "")
-        selected_metrics = state.get("selected_metrics", [])
-        
+        query_plan = cast(dict[str, object], state.get("query_plan", {}))
+        reasoning_plan_raw = state.get("reasoning_plan", "")
+        reasoning_plan = str(reasoning_plan_raw) if reasoning_plan_raw else ""
+        selected_metrics_raw = cast(list[object], state.get("selected_metrics", []))
+        selected_metrics = [str(metric) for metric in selected_metrics_raw]
+
         # 加载资源
-        schema = load_schema()
-        full_metrics = load_full_metrics()
-        
-        # 根据选择的指标进行上下文剪枝
-        if selected_metrics:
-            filtered_metrics_text = filter_metrics_by_selection(full_metrics, selected_metrics)
-        else:
-            # 没有选择指标（可能是简单数值查询），不注入指标上下文，避免干扰
-            filtered_metrics_text = ""
+        schema_provider = get_schema_provider(state.get("workspace_id"))
+        schema_text = schema_provider.get_schema_text()
+        metrics_text_raw = schema_provider.get_metrics_text()  # pyright: ignore[reportAny]
+        metrics_text = cast(str, metrics_text_raw)
+        schema = _parse_json_object(schema_text) or {"schema_summary": schema_text}
+        full_metrics = _parse_json_object(metrics_text)
         
         # 获取域配置和 PromptBuilder
         domain = get_domain_config()
         builder = prompt_builder or PromptBuilder(domain=domain)
         
-        # 提取用户指令
-        instructions = extract_user_instructions(state)
+        # 判断是否为指标查询
+        is_metric_query = (intent_type == IntentType.METRIC_QUERY or 
+                          intent_type == "metric_query")
         
-        # 添加 Query Plan 中的信息作为额外指令
-        if query_plan:
-            calc_type = query_plan.get("calculation_type", "")
-            filters = query_plan.get("filters", {})
-            group_by = query_plan.get("group_by", [])
+        # 准备 schema_context (供 Data Analyzer 使用)
+        schema_context = schema_text
+        
+        if is_metric_query:
+            # 指标查询 (Code-Based 模式): 
+            # 直接进入 data_analyzer，不需要生成 SQL prompt
+            # data_analyzer 会使用 schema_context 和 query_plan 生成完整代码
+            return {
+                "assembled_prompt": "",  # Code-Based 模式不使用此字段
+                "schema_context": schema_context,
+                "current_node": "context_assembler"
+            }
+        else:
+            # 非指标查询 (VALUE_QUERY): 使用原有的完整 SQL 生成 Prompt
+            # 根据选择的指标进行上下文剪枝
+            if selected_metrics and full_metrics:
+                filtered_metrics_text = filter_metrics_by_selection(full_metrics, selected_metrics)
+            elif metrics_text:
+                filtered_metrics_text = metrics_text
+            else:
+                filtered_metrics_text = ""
             
-            if calc_type:
-                instructions.append(f"计算类型: {calc_type}")
-            if filters:
-                filter_str = ", ".join([f"{k}={v}" for k, v in filters.items() if v])
-                if filter_str:
-                    instructions.append(f"筛选条件: {filter_str}")
-            if group_by:
-                instructions.append(f"分组字段: {', '.join(group_by)}")
-        
-        # 使用 PromptBuilder 构建 Prompt
-        assembled_prompt = builder.build_sql_generation_prompt(
-            query=refined_intent,
-            schema=schema,
-            matched_metrics=None,  # 不再使用旧的 matched_metrics
-            sql_samples=domain.sql_samples,
-            instructions=instructions if instructions else None,
-            reasoning_plan=reasoning_plan,
-            full_metrics_context=filtered_metrics_text  # 使用筛选后的指标
-        )
-        
-        return {
-            "assembled_prompt": assembled_prompt,
-            "current_node": "context_assembler"
-        }
+            # 提取用户指令
+            instructions = extract_user_instructions(state)
+            sql_samples = domain.sql_samples or SQLSampleLibrary()
+            
+            # 添加 Query Plan 中的信息作为额外指令
+            if query_plan:
+                calc_type = str(query_plan.get("calculation_type", "") or "")
+                filters_raw = query_plan.get("filters", {})
+                filters = cast(dict[str, object], filters_raw) if isinstance(filters_raw, dict) else {}
+                group_by_raw = query_plan.get("group_by", [])
+                group_by = [str(field) for field in group_by_raw] if isinstance(group_by_raw, list) else []
+                
+                if calc_type:
+                    instructions.append(f"计算类型: {calc_type}")
+                if filters:
+                    filter_str = ", ".join([f"{k}={v}" for k, v in filters.items() if v])
+                    if filter_str:
+                        instructions.append(f"筛选条件: {filter_str}")
+                if group_by:
+                    instructions.append(f"分组字段: {', '.join(group_by)}")
+            
+            assembled_prompt = builder.build_sql_generation_prompt(
+                query=refined_intent,
+                schema=schema,
+                matched_metrics=[],
+                sql_samples=sql_samples,
+                instructions=instructions,
+                reasoning_plan=reasoning_plan,
+                full_metrics_context=filtered_metrics_text
+            )
+            
+            return {
+                "assembled_prompt": assembled_prompt,
+                "schema_context": schema_context,
+                "current_node": "context_assembler"
+            }
     
     return context_assembler_node

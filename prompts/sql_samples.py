@@ -84,33 +84,56 @@ class SQLSampleLibrary:
 EDUCATION_SQL_SAMPLES = [
     {
         "question": "查询北京市所有学校的学生人数",
-        "sql": 'SELECT "学校名称", "学生数" FROM "schools" WHERE "省份" = \'北京市\' ORDER BY "学生数" DESC',
+        "sql": "SELECT school_name, student_num FROM schools WHERE province = '北京市' ORDER BY student_num DESC",
         "description": "简单查询，按学生数降序排列"
     },
     {
         "question": "统计各省份的学校数量",
-        "sql": 'SELECT "省份", COUNT(*) AS "学校数量" FROM "schools" GROUP BY "省份" ORDER BY "学校数量" DESC',
+        "sql": "SELECT province, COUNT(*) AS school_count FROM schools GROUP BY province ORDER BY school_count DESC",
         "description": "聚合查询，使用 COUNT 和 GROUP BY"
     },
     {
         "question": "找出学生数量排名前10的学校",
-        "sql": '''WITH ranked_schools AS (
-    SELECT "学校名称", "省份", "学生数",
-           DENSE_RANK() OVER (ORDER BY "学生数" DESC) AS rank
-    FROM "schools"
+        "sql": """WITH ranked_schools AS (
+    SELECT school_name, province, student_num,
+           DENSE_RANK() OVER (ORDER BY student_num DESC) AS rank_val
+    FROM schools
 )
-SELECT "学校名称", "省份", "学生数", rank
+SELECT school_name, province, student_num, rank_val
 FROM ranked_schools
-WHERE rank <= 10''',
+WHERE rank_val <= 10""",
         "description": "排名查询，使用 CTE 和 DENSE_RANK()"
     },
     {
-        "question": "对比北京和上海两地的平均班级数",
-        "sql": '''SELECT "省份", AVG("班级数") AS "平均班级数"
-FROM "schools"
-WHERE "省份" IN ('北京市', '上海市')
-GROUP BY "省份"''',
-        "description": "对比查询，使用 IN 和 AVG"
+         "question": "对比湖北和湖南在基础设施方面的表现",
+         "sql": """WITH 
+all_province_scores AS (
+    SELECT 
+        T3.province, 
+        SUM(T1.level1_weight * T2.value) AS total_score 
+    FROM questions AS T1 
+    INNER JOIN school_answers AS T2 ON T1.id = T2.question_id 
+    INNER JOIN schools AS T3 ON T2.school_id = T3.id 
+    WHERE T1.level1_name = '基础设施'
+    GROUP BY T3.province
+),
+global_stats AS (
+    SELECT 
+        MAX(total_score) AS max_score, 
+        MIN(total_score) AS min_score 
+    FROM all_province_scores
+)
+SELECT 
+    p.province, 
+    p.total_score,
+    CASE 
+        WHEN g.max_score = g.min_score THEN 0 
+        ELSE (p.total_score - g.min_score) / (g.max_score - g.min_score) 
+    END AS normalized_score
+FROM all_province_scores AS p 
+JOIN global_stats AS g ON 1=1  -- 笛卡尔积连接统计数据
+WHERE p.province IN ('湖北省', '湖南省');""",
+         "description": "高级对比查询：使用 CTE 计算各省加权总分，再计算全局最大最小值进行 Min-Max 归一化，最后筛选特定省份。"
     }
 ]
 

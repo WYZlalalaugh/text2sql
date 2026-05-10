@@ -4,6 +4,7 @@ SQL 纠错 Agent - 当 SQL 执行失败时调用
 参考 WrenAI 的 SQL Correction Pipeline 设计。
 """
 import json
+import re
 from typing import Dict, Any
 
 from state import AgentState
@@ -29,7 +30,7 @@ def create_sql_corrector(llm_client, database_type: DatabaseType = DatabaseType.
         """
         user_query = state.get("user_query", "")
         generated_sql = state.get("generated_sql", "")
-        observation = state.get("execution_observation", "")
+        observation = str(state.get("execution_observation", "") or "")
         assembled_prompt = state.get("assembled_prompt", "")
         
         # 增加计数（放在最前面，确保无论结果如何，机会都消耗了）
@@ -66,6 +67,16 @@ def create_sql_corrector(llm_client, database_type: DatabaseType = DatabaseType.
             
             response_text = response.content if hasattr(response, 'content') else str(response)
             reflection, corrected_sql = _extract_reflection_and_sql(response_text)
+
+            if not _looks_like_sql(corrected_sql):
+                return {
+                    "generated_sql": "",
+                    "execution_error": "SQL纠错失败: 模型返回中未提取到可执行SQL",
+                    "sql_reflection": reflection,
+                    "correction_attempted": True,
+                    "correction_count": correction_count,
+                    "current_node": "sql_corrector"
+                }
             
             return {
                 "generated_sql": corrected_sql,
@@ -92,7 +103,7 @@ def _extract_reflection_and_sql(response_text: str) -> tuple[str, str]:
     """从 LLM 响应中提取反思过程和 SQL"""
     reflection = ""
     sql = ""
-    
+
     try:
         # 查找 JSON 代码块或直接查找括号
         start = response_text.find('{')
@@ -101,20 +112,18 @@ def _extract_reflection_and_sql(response_text: str) -> tuple[str, str]:
             json_str = response_text[start:end]
             data = json.loads(json_str)
             reflection = data.get("reflection", "")
-            sql = data.get("sql", "")
+            sql = _clean_sql(str(data.get("sql", "")))
             
-        if sql:
-            return reflection, _clean_sql(sql)
-    except:
+        if _looks_like_sql(sql):
+            return reflection, sql
+    except Exception:
         pass
 
-    # 如果 JSON 解析失败，尝试正则表达式匹配 (兜底)
-    import re
-    sql_match = re.search(r"```sql\n(.*?)\n```", response_text, re.DOTALL)
-    if sql_match:
-        sql = sql_match.group(1).strip()
+    sql_from_text = _clean_sql(response_text)
+    if _looks_like_sql(sql_from_text):
+        return reflection or "已从文本中提取SQL。", sql_from_text
     
-    return "无法解析详细反思过程，请参考新生成的 SQL。", sql or response_text
+    return "无法解析详细反思过程，且未提取到可执行SQL。", ""
 
 
 
@@ -175,6 +184,12 @@ def _extract_sql_from_response(response_text: str) -> str:
 def _clean_sql(sql: str) -> str:
     """清理 SQL 字符串"""
     sql = sql.strip()
+    if not sql:
+        return ""
+
+    tagged_sql = _extract_tagged_sql(sql)
+    if tagged_sql:
+        sql = tagged_sql
     
     # 移除可能的 markdown 标记
     if sql.startswith("```sql"):
@@ -185,7 +200,43 @@ def _clean_sql(sql: str) -> str:
     if sql.endswith("```"):
         sql = sql[:-3]
     
-    return sql.strip()
+    text = "\n".join([line.strip() for line in sql.split("\n") if line.strip()]).strip()
+
+    match = re.search(r"(?is)\b(WITH|SELECT|CREATE\s+TABLE)\b", text)
+    if not match:
+        return text
+
+    candidate = text[match.start():].strip()
+    semicolon_idx = candidate.find(";")
+    if semicolon_idx >= 0:
+        return candidate[: semicolon_idx + 1].strip()
+
+    return candidate
+
+
+def _extract_tagged_sql(text: str) -> str:
+    """提取 <SQL>...</SQL> 或 ```sql ...``` 包裹内容。"""
+    tag_match = re.search(r"(?is)<sql>\s*(.*?)\s*</sql>", text)
+    if tag_match:
+        return tag_match.group(1).strip()
+
+    fenced_match = re.search(r"(?is)```sql\s*(.*?)\s*```", text)
+    if fenced_match:
+        return fenced_match.group(1).strip()
+
+    return ""
+
+
+def _looks_like_sql(sql: str) -> bool:
+    sql_upper = sql.strip().upper()
+    return (
+        bool(sql_upper)
+        and (
+            sql_upper.startswith("SELECT")
+            or sql_upper.startswith("WITH")
+            or sql_upper.startswith("CREATE TABLE")
+        )
+    )
 
 
 # 默认节点（需要运行时注入 LLM 客户端）

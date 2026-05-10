@@ -7,72 +7,122 @@
     <title>Text2SQL 智能助手</title>
     <!-- Element Plus 样式 -->
     <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+
+    <!-- 引入 Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap"
+        rel="stylesheet">
+
     <!-- 自定义样式 -->
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=52">
 </head>
 
 <body>
+    <!-- Background Elements -->
+    <div class="bg-shape bg-shape-1"></div>
+    <div class="bg-shape bg-shape-2"></div>
+    <div class="bg-shape bg-shape-3"></div>
     <!-- SVG Sprite Definitions -->
     <svg style="display: none;">
         <defs>
-            <symbol id="icon-logo" viewBox="0 0 24 24">
+            <symbol id="icon-ai-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l2.4 7.6 7.6 2.4-7.6 2.4L12 22l-2.4-7.6-7.6-2.4 7.6-2.4L12 2z"></path>
+            </symbol>
+            <symbol id="icon-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+            </symbol>
+            <symbol id="icon-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </symbol>
+            <symbol id="icon-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </symbol>
+            <symbol id="icon-time" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+            </symbol>
+            <symbol id="icon-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            </symbol>
+            <symbol id="icon-school" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
+                <path d="M6 12v5c3 3 9 3 12 0v-5"></path>
+            </symbol>
+            <symbol id="icon-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="20" x2="18" y2="10"></line>
+                <line x1="12" y1="20" x2="12" y2="4"></line>
+                <line x1="6" y1="20" x2="6" y2="14"></line>
+            </symbol>
+            <symbol id="icon-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
                 <path
-                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+                    d="M9 18h6M10 22h4M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1.63.74 3.16 1.5 4.5.76.76 1.23 1.52 1.41 2.5M12 2v2">
+                </path>
             </symbol>
-            <symbol id="icon-plus" viewBox="0 0 24 24">
-                <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+            <symbol id="icon-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
             </symbol>
-            <symbol id="icon-chat" viewBox="0 0 24 24">
-                <path
-                    d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 14v-2.47l6.88-6.88c.2-.2.51-.2.71 0l1.77 1.77c.2.2.2.51 0 .71L8.47 14H6zm12 0h-7.5l2-2H18v2z" />
+            <symbol id="icon-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+                <circle cx="12" cy="5" r="2"></circle>
+                <path d="M12 7v4M8 16h.01M16 16h.01"></path>
             </symbol>
-            <symbol id="icon-time" viewBox="0 0 24 24">
-                <path
-                    d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z" />
+            <symbol id="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
             </symbol>
-            <symbol id="icon-book" viewBox="0 0 24 24">
-                <path
-                    d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" />
+            <symbol id="icon-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="3" y1="9" x2="21" y2="9"></line>
+                <line x1="3" y1="15" x2="21" y2="15"></line>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+                <line x1="15" y1="3" x2="15" y2="21"></line>
             </symbol>
-            <symbol id="icon-school" viewBox="0 0 24 24">
-                <path d="M5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82zM12 3L1 9l11 6 9-4.91V17h2V9L12 3z" />
+            <symbol id="icon-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="16 18 22 12 16 6"></polyline>
+                <polyline points="8 6 2 12 8 18"></polyline>
             </symbol>
-            <symbol id="icon-chart" viewBox="0 0 24 24">
-                <path
-                    d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z" />
+            <symbol id="icon-step" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6"></polyline>
             </symbol>
-            <symbol id="icon-bulb" viewBox="0 0 24 24">
-                <path
-                    d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6A4.997 4.997 0 0 1 7 9c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.63-.8 3.16-2.15 4.1z" />
+            <symbol id="icon-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
             </symbol>
-            <symbol id="icon-user" viewBox="0 0 24 24">
-                <path
-                    d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+            <symbol id="icon-recommend" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polygon
+                    points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2">
+                </polygon>
             </symbol>
-            <symbol id="icon-bot" viewBox="0 0 24 24">
-                <path
-                    d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.38-1 1.72V7h1a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3h1V5.72c-.6-.34-1-.98-1-1.72a2 2 0 0 1 2-2M7.5 13A1.5 1.5 0 0 0 6 14.5 1.5 1.5 0 0 0 7.5 16 1.5 1.5 0 0 0 9 14.5 1.5 1.5 0 0 0 7.5 13m9 0a1.5 1.5 0 0 0-1.5 1.5 1.5 1.5 0 0 0 1.5 1.5 1.5 1.5 0 0 0 1.5-1.5 1.5 1.5 0 0 0-1.5-1.5z" />
+            <symbol id="icon-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
             </symbol>
-            <symbol id="icon-send" viewBox="0 0 24 24">
-                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-            </symbol>
-            <symbol id="icon-table" viewBox="0 0 24 24">
-                <path
-                    d="M20 2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM8 20H4v-4h4v4zm0-6H4v-4h4v4zm0-6H4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4z" />
-            </symbol>
-            <symbol id="icon-code" viewBox="0 0 24 24">
-                <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z" />
-            </symbol>
-            <symbol id="icon-step" viewBox="0 0 24 24">
-                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-            </symbol>
-            <symbol id="icon-search" viewBox="0 0 24 24">
-                <path
-                    d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
-            </symbol>
-            <symbol id="icon-recommend" viewBox="0 0 24 24">
-                <path
-                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
+            <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
             </symbol>
         </defs>
     </svg>
@@ -83,24 +133,24 @@
             <div class="nav-left">
                 <div class="logo-wrapper">
                     <svg class="icon logo-icon">
-                        <use xlink:href="#icon-bot"></use>
+                        <use xlink:href="#icon-ai-star"></use>
                     </svg>
-                    <span>Text2SQL 助手</span>
+                    <span>Text2SQL 洞察中枢</span>
                 </div>
                 <div class="nav-items">
-                    <a href="#" class="nav-item active">
+                    <a href="#" class="nav-item" :class="{active: currentView === 'chat'}" @click.prevent="switchView('chat')">
                         <svg class="icon">
                             <use xlink:href="#icon-chart"></use>
                         </svg>
                         <span>首页</span>
                     </a>
-                    <a href="#" class="nav-item">
+                    <a href="#" class="nav-item" :class="{active: currentView === 'modeling'}" @click.prevent="switchView('modeling')">
                         <svg class="icon">
                             <use xlink:href="#icon-code"></use>
                         </svg>
                         <span>建模</span>
                     </a>
-                    <a href="#" class="nav-item">
+                    <a href="#" class="nav-item" :class="{active: currentView === 'database'}" @click.prevent="switchView('database')">
                         <svg class="icon">
                             <use xlink:href="#icon-table"></use>
                         </svg>
@@ -109,11 +159,30 @@
                 </div>
             </div>
             <div class="nav-right">
-                <div class="user-profile">
+                <div class="header-toggle-group">
+                    <div class="theme-toggle">
+                        <span>主题</span>
+                        <el-switch v-model="isDarkTheme" @change="toggleTheme" active-text="深色" inactive-text="浅色"
+                            inline-prompt>
+                        </el-switch>
+                    </div>
+                    <div class="suggestion-toggle">
+                        <span>智能推荐</span>
+                        <el-switch v-model="enableSuggestions" active-color="#409eff"></el-switch>
+                    </div>
+                </div>
+                <div class="user-profile" v-if="currentUser">
                     <svg class="icon">
                         <use xlink:href="#icon-user"></use>
                     </svg>
-                    <span>Admin</span>
+                    <span>{{ currentUser.username }}</span>
+                    <el-button link type="primary" @click="logout">退出</el-button>
+                </div>
+                <div class="user-profile" v-else>
+                    <svg class="icon">
+                        <use xlink:href="#icon-user"></use>
+                    </svg>
+                    <el-button link type="primary" @click="openLoginDialog">登录同步会话</el-button>
                 </div>
             </div>
         </header>
@@ -123,27 +192,20 @@
             <aside class="sidebar">
                 <div class="sidebar-header">
                     <span class="sidebar-title">对话历史</span>
-                    <el-button type="primary" size="small" @click="resetChat" plain round>
+                    <el-button type="primary" size="small" @click="createNewThread" plain round>
                         <svg class="icon" style="margin-right: 4px;">
                             <use xlink:href="#icon-plus"></use>
                         </svg> New
                     </el-button>
                 </div>
                 <div class="thread-list">
-                    <div class="thread-item active">
+                    <div class="thread-item" v-for="thread in threadList" :key="thread.id"
+                        :class="{ active: activeThreadId === thread.id }" @click="switchThread(thread.id)">
                         <svg class="icon thread-icon">
-                            <use xlink:href="#icon-chat"></use>
+                            <use :xlink:href="activeThreadId === thread.id ? '#icon-chat' : '#icon-time'"></use>
                         </svg>
-                        <span class="thread-title">{{ currentThreadTitle || '新对话' }}</span>
-                        <span class="thread-time">刚刚</span>
-                    </div>
-                    <!-- 模拟历史记录 -->
-                    <div class="thread-item" v-for="i in 3" :key="i">
-                        <svg class="icon thread-icon">
-                            <use xlink:href="#icon-time"></use>
-                        </svg>
-                        <span class="thread-title">历史查询记录 {{ i }}</span>
-                        <span class="thread-time">{{ i }}h</span>
+                        <span class="thread-title">{{ getThreadTitle(thread) }}</span>
+                        <span class="thread-time">{{ formatThreadTime(thread) }}</span>
                     </div>
                 </div>
                 <div class="sidebar-footer">
@@ -158,17 +220,19 @@
 
             <!-- 主内容区 -->
             <main class="content-area">
-                <div class="chat-wrapper" ref="chatWrapper">
+                <!-- 聊天视图 -->
+                <div class="chat-wrapper" ref="chatWrapper" v-if="currentView === 'chat'">
 
                     <!-- 欢迎页 -->
                     <div class="welcome-view" v-if="messages.length === 0">
                         <div class="welcome-header">
-                            <div class="card-icon" style="background:transparent; color: var(--primary-color);">
+                            <div class="card-icon welcome-emblem">
                                 <svg class="icon welcome-icon-lg">
-                                    <use xlink:href="#icon-bot"></use>
+                                    <use xlink:href="#icon-ai-star"></use>
                                 </svg>
                             </div>
                             <h2>我想查询什么数据？</h2>
+                            <p class="welcome-subtitle">探索教育数据、构建洞察、生成图表，一站式完成。</p>
                         </div>
 
                         <div class="quick-starts">
@@ -208,7 +272,7 @@
                                     <use xlink:href="#icon-user"></use>
                                 </svg>
                                 <svg class="icon" v-else>
-                                    <use xlink:href="#icon-bot"></use>
+                                    <use xlink:href="#icon-ai-star"></use>
                                 </svg>
                             </div>
 
@@ -219,11 +283,11 @@
                                 </div>
 
                                 <!-- Bot 回答 -->
-                                <div class="bot-response" :class="{ 'is-streaming': msg.isStreaming }">
+                                <div class="bot-response" v-else :class="{ 'is-streaming': msg.isStreaming }">
 
                                     <!-- 思考步骤 (折叠面板) -->
-                                    <div class="reasoning-steps" v-if="msg.steps">
-                                        <el-collapse>
+                                    <div class="reasoning-steps" v-if="msg.steps && msg.steps.length > 0">
+                                        <el-collapse v-model="msg.activeCollapse">
                                             <el-collapse-item name="1">
                                                 <template #title>
                                                     <div style="display:flex;align-items:center;gap:6px;">
@@ -242,82 +306,203 @@
                                         </el-collapse>
                                     </div>
 
+                                    <!-- 指标执行计划 (折叠面板) -->
+                                    <div class="metric-plan-panel" v-if="msg.metricPlan && msg.metricPlan.length > 0">
+                                        <el-collapse>
+                                            <el-collapse-item>
+                                                <template #title>
+                                                    <div style="display:flex;align-items:center;gap:6px;">
+                                                        <svg class="icon" style="color:var(--primary-color)">
+                                                            <use xlink:href="#icon-step"></use>
+                                                        </svg>
+                                                        <span>执行计划</span>
+                                                        <span class="metric-plan-summary">
+                                                            {{ Object.values(msg.metricStepStatuses).filter(s => s === 'succeeded').length }}/{{ msg.metricPlan.length }} 步完成
+                                                        </span>
+                                                    </div>
+                                                </template>
+                                                <div class="metric-steps-list">
+                                                    <template v-for="(node, nIndex) in msg.metricPlan" :key="nIndex">
+                                                    <div v-if="node && node.step_id"
+                                                        class="metric-step-item"
+                                                        :class="'metric-step--' + (msg.metricStepStatuses[node.step_id] || 'pending')">
+                                                        <div class="metric-step-header">
+                                                            <span class="metric-step-status-dot"></span>
+                                                            <span class="metric-step-id">{{ node.step_id }}</span>
+                                                            <span class="metric-step-type">{{ node.intent_type }}</span>
+                                                            <span class="metric-step-desc-text">{{ node.description }}</span>
+                                                        </div>
+                                                        <div class="metric-step-body" v-if="msg.metricStepSqls[node.step_id] || msg.metricStepResults[node.step_id]">
+                                                            <div class="metric-step-sql" v-if="msg.metricStepSqls[node.step_id]">
+                                                                <div class="metric-sql-toggle" @click="toggleMetricSql(msg, node.step_id)">
+                                                                    {{ msg._expandedSqls && msg._expandedSqls[node.step_id] ? '收起 SQL' : '查看 SQL' }}
+                                                                </div>
+                                                                <div class="metric-sql-code-wrap" v-if="msg._expandedSqls && msg._expandedSqls[node.step_id]">
+                                                                    <pre class="metric-sql-code">{{ msg.metricStepSqls[node.step_id] }}</pre>
+                                                                    <button class="metric-sql-copy-btn" @click="copySql(msg.metricStepSqls[node.step_id])" title="复制 SQL">
+                                                                        <svg class="icon" style="width:14px;height:14px;"><use xlink:href="#icon-copy"></use></svg>
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="metric-step-result" v-if="msg.metricStepResults[node.step_id]">
+                                                                <template v-if="msg.metricStepResults[node.step_id].error">
+                                                                    <span class="metric-result-error">{{ msg.metricStepResults[node.step_id].error }}</span>
+                                                                </template>
+                                                                <template v-else>
+                                                                    <span v-if="msg.metricStepResults[node.step_id].row_count" class="metric-result-count">
+                                                                        {{ msg.metricStepResults[node.step_id].row_count }} 行
+                                                                    </span>
+                                                                    <span v-if="msg.metricStepResults[node.step_id].output_table" class="metric-result-table">
+                                                                        → {{ msg.metricStepResults[node.step_id].output_table }}
+                                                                    </span>
+                                                                </template>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </el-collapse-item>
+                                        </el-collapse>
+                                    </div>
+
                                     <!-- 查询规划推理 (Query Reasoning) -->
-                                    <div class="ai-reasoning" v-if="msg.reasoning"
-                                        style="margin: 12px 0; padding: 12px; border-left: 4px solid #409eff; background: #ecf5ff; border-radius: 4px;">
-                                        <div
-                                            style="font-size: 13px; font-weight: bold; color: #409eff; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-                                            <svg class="icon" style="width:14px; height:14px; color:#409eff;">
+                                    <div class="ai-reasoning" v-if="msg.reasoning">
+                                        <div class="ai-reasoning-title">
+                                            <svg class="icon">
                                                 <use xlink:href="#icon-step"></use>
                                             </svg>
                                             查询执行规划：
                                         </div>
-                                        <div style="font-size: 13px; color: #666; white-space: pre-wrap;">
+                                        <div class="ai-reasoning-body">
                                             {{ msg.reasoning }}
                                         </div>
                                     </div>
 
                                     <!-- AI 反思/ReAct Thought -->
 
-                                    <div class="ai-reflection" v-if="msg.reflection"
-                                        style="margin: 12px 0; padding: 12px; border-left: 4px solid #e6a23c; background: #fdf6ec; border-radius: 4px;">
-                                        <div
-                                            style="font-size: 13px; font-weight: bold; color: #e6a23c; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
+                                    <div class="ai-reflection" v-if="msg.reflection">
+                                        <div class="ai-reflection-title">
                                             <i class="el-icon-warning-outline"></i>
-                                            <svg class="icon" style="width:14px; height:14px;">
+                                            <svg class="icon">
                                                 <use xlink:href="#icon-correct"></use>
                                             </svg>
                                             AI 执行反思：
                                         </div>
-                                        <div style="font-size: 13px; color: #666; font-style: italic;">
+                                        <div class="ai-reflection-body">
                                             {{ msg.reflection }}
                                         </div>
                                     </div>
 
                                     <!-- 文本回答 -->
-                                    <div class="response-text" v-html="formatMarkdown(msg.content)"></div>
+                                    <div class="response-text" v-if="msg.content" v-html="formatMarkdown(msg.content)">
+                                    </div>
+
+                                    <!-- 加载状态 -->
+                                    <div class="loading-state" v-else-if="msg.isStreaming" style="padding: 12px 0;">
+                                        <div class="loading-dots">
+                                            <span></span><span></span><span></span>
+                                        </div>
+                                        <span class="loading-text"
+                                            style="color: var(--text-low); font-size: 14px; margin-left: 12px; font-weight: 500;">思考中...</span>
+                                    </div>
+
+                                    <div class="clarification-panel"
+                                        v-if="msg.needClarification && msg.clarificationSections && msg.clarificationSections.length > 0">
+                                        <div class="clarification-panel-title">
+                                            <span class="clarification-title-dot"></span>
+                                            <span>澄清偏好</span>
+                                        </div>
+                                        <div class="clarification-panel-subtitle">先点选关键偏好，再点“仅发送已选项”；也可以继续在下方输入框自由补充。
+                                        </div>
+                                        <div class="clarification-section"
+                                            v-for="(section, sIdx) in msg.clarificationSections" :key="section.id">
+                                            <div class="clarification-section-label">
+                                                <span class="clarification-section-index">{{ section.index }}</span>
+                                                <span class="clarification-section-text">{{ section.prompt }}</span>
+                                            </div>
+                                            <div class="clarification-chip-group">
+                                                <button type="button" class="clarification-chip"
+                                                    v-for="option in section.options" :key="option"
+                                                    :class="{ selected: section.selectedOption === option }"
+                                                    @click="toggleClarificationOption(msg, sIdx, option)">
+                                                    {{ option }}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="clarification-actions">
+                                            <button type="button" class="clarification-action ghost"
+                                                @click="clearClarificationSelection(msg)">
+                                                清空选择
+                                            </button>
+                                            <button type="button" class="clarification-action primary"
+                                                @click="submitClarificationSelection(msg)">
+                                                仅发送已选项
+                                            </button>
+                                        </div>
+                                    </div>
 
 
                                     <!-- 数据表格 (如果有 SQL 结果) -->
                                     <!-- 数据结果按钮 -->
-                                    <div class="data-result-btn" v-if="msg.sqlResult && msg.sqlResult.length > 0"
-                                        style="margin-top: 10px;">
-                                        <el-button type="success" plain size="small" @click="showData(msg.sqlResult)">
+                                    <!-- 动作按钮栏 -->
+                                    <div class="action-bar" v-if="msg.sql || msg.pythonCode || hasResultData(msg)">
+
+                                        <!-- 显示 SQL 按钮（metric query 下隐藏，由历史 SQL 汇总面板替代） -->
+                                        <button class="action-btn" v-if="msg.sql && !msg.metricPlan" @click="showSql(msg.sql)">
+                                            <svg class="icon" style="margin-right:4px">
+                                                <use xlink:href="#icon-code"></use>
+                                            </svg>
+                                            查看SQL
+                                        </button>
+
+                                        <!-- 新增: 显示 Python 代码按钮 -->
+                                        <button class="action-btn" v-if="msg.pythonCode"
+                                            @click="showSql(msg.pythonCode)">
+                                            <svg class="icon" style="margin-right:4px">
+                                                <use xlink:href="#icon-code"></use>
+                                            </svg>
+                                            查看代码
+                                        </button>
+
+                                        <button class="action-btn" v-if="canViewData(msg)" @click="showData(msg)">
                                             <svg class="icon" style="margin-right:4px">
                                                 <use xlink:href="#icon-table"></use>
                                             </svg>
-                                            查看查询数据 ({{ msg.sqlResult.length }} 条)
-                                        </el-button>
+                                            {{ msg.isTruncated ? `查看全部数据(${msg.totalCount}条)` : (hasResultData(msg) ?
+                                            '查看数据' : '查看数据（回放）') }}
+                                        </button>
+
+                                        <button class="action-btn" v-if="msg.chartSpec"
+                                            @click="viewChart(msg.chartSpec, msg.chartReasoning)">
+                                            <svg class="icon" style="margin-right:4px">
+                                                <use xlink:href="#icon-chart"></use>
+                                            </svg>
+                                            查看图表
+                                        </button>
+
+                                        <button class="action-btn primary" v-else-if="hasResultData(msg)"
+                                            @click="generateChart(msg, index)" :disabled="msg.isChartLoading">
+                                            <svg class="icon" :class="{'is-loading': msg.isChartLoading}"
+                                                style="margin-right:4px">
+                                                <use xlink:href="#icon-chart"></use>
+                                            </svg>
+                                            {{ msg.isChartLoading ? '生成中...' : '生成图表' }}
+                                        </button>
                                     </div>
 
-                                    <!-- SQL 代码 (折叠) -->
-                                    <div class="sql-code" v-if="msg.sql">
-                                        <el-collapse>
-                                            <el-collapse-item name="2">
-                                                <template #title>
-                                                    <div style="display:flex;align-items:center;gap:6px;">
-                                                        <svg class="icon">
-                                                            <use xlink:href="#icon-code"></use>
-                                                        </svg>
-                                                        <span>查看 SQL</span>
-                                                    </div>
-                                                </template>
-                                                <pre>{{ msg.sql }}</pre>
-                                            </el-collapse-item>
-                                        </el-collapse>
-                                    </div>
+
 
                                     <!-- 相关推荐问题 -->
-                                    <div class="suggested-questions" v-if="index === messages.length - 1">
+                                    <div class="suggested-questions"
+                                        v-if="index === messages.length - 1 && suggestedQuestions && suggestedQuestions.length > 0">
                                         <div class="suggest-title">
                                             <svg class="icon">
                                                 <use xlink:href="#icon-recommend"></use>
                                             </svg>
-                                            推荐问题
+                                            为您推荐
                                         </div>
                                         <div class="question-chips">
-                                            <el-tag v-for="q in suggestedQuestions" :key="q" type="info" effect="plain"
-                                                class="question-tag" @click="sendMessage(q)">
+                                            <el-tag v-for="q in suggestedQuestions" :key="q" type="primary"
+                                                effect="light" class="question-tag" @click="sendMessage(q)">
                                                 {{ q }}
                                             </el-tag>
                                         </div>
@@ -326,58 +511,221 @@
                             </div>
                         </div>
 
-                        <!-- 加载中 -->
-                        <div class="message-item assistant" v-if="isLoading">
-                            <div class="avatar"><svg class="icon">
-                                    <use xlink:href="#icon-bot"></use>
-                                </svg></div>
-                            <div class="message-content-wrapper">
-                                <div class="bot-response">
-                                    <div class="loading-dots">
-                                        <span></span><span></span><span></span>
-                                    </div>
-                                    <span style="font-size: 12px; color: #909399; margin-left: 10px">思考中...</span>
-                                </div>
-                            </div>
+                        <!-- Removed separate loading div as it is now part of tempMessage -->
+                    </div>
+
+                    <!-- 底部输入框 -->
+                    <div class="input-area">
+                        <div class="input-container">
+                            <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 4}" placeholder="询问任何问题以探索您的数据..."
+                                v-model="inputMessage" @keydown.enter.native.prevent="handleEnter" resize="none">
+                            </el-input>
+
+                            <!-- 发送按钮 (不在加载时显示) -->
+                            <el-button type="primary" class="send-btn" @click="handleSend" v-if="!isLoading">
+                                <svg class="icon" style="font-size:16px">
+                                    <use xlink:href="#icon-send"></use>
+                                </svg>
+                            </el-button>
+
+                            <!-- 停止按钮 (加载时显示) -->
+                            <el-button type="danger" class="send-btn stop-btn" @click="stopQuery" v-if="isLoading">
+                                <svg class="icon" style="font-size:16px">
+                                    <use xlink:href="#icon-stop"></use>
+                                </svg>
+                                停止
+                            </el-button>
+                        </div>
+                        <div class="input-footer">
+                            AI 生成的内容可能不准确，请核实重要信息
                         </div>
                     </div>
                 </div>
 
-                <!-- 底部输入框 -->
-                <div class="input-area">
-                    <div class="input-container">
-                        <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 4}" placeholder="询问任何问题以探索您的数据..."
-                            v-model="inputMessage" @keydown.enter.native.prevent="handleEnter" resize="none">
-                        </el-input>
-                        <el-button type="primary" class="send-btn" @click="handleSend" :loading="isLoading">
-                            <svg class="icon" v-if="!isLoading" style="font-size:16px">
-                                <use xlink:href="#icon-send"></use>
-                            </svg>
-                        </el-button>
+                <!-- 建模视图 -->
+                <div class="view-container modeling-view" v-else-if="currentView === 'modeling'">
+                    <div class="view-header">
+                        <h2>指标体系建模</h2>
+                        <p>展示当前教育数据指标体系结构</p>
                     </div>
-                    <div class="input-footer">
-                        AI 生成的内容可能不准确，请核实重要信息
+                    <div class="view-content">
+                        <div v-if="metricsLoading" style="padding: 40px;">
+                            <el-skeleton :rows="10" animated />
+                        </div>
+                        <div v-if="!metricsLoading && metricsData" class="metrics-tree">
+                            <div v-for="(level1, level1Name) in metricsData" :key="level1Name" class="metrics-level1">
+                                <div class="level1-header" @click="toggleMetricsLevel1(level1Name)">
+                                    <span class="level1-dot"></span>
+                                    <div class="level1-text">
+                                        <span class="level1-title">{{ level1Name }}</span>
+                                        <span class="level1-desc" v-if="level1['一级指标解释']">{{ level1['一级指标解释'] }}</span>
+                                    </div>
+                                    <span class="level1-arrow" :class="{expanded: metricsExpanded[level1Name]}">▶</span>
+                                </div>
+                                <div v-if="level1['二级指标'] && metricsExpanded[level1Name]" class="level2-list">
+                                    <div v-for="(level2, level2Name) in level1['二级指标']" :key="level2Name" class="metrics-level2">
+                                        <span class="level2-dot"></span>
+                                        <div class="level2-text">
+                                            <span class="level2-title">{{ level2Name }}</span>
+                                            <div class="level2-desc" v-if="level2['二级指标解释']">
+                                                {{ level2['二级指标解释'] }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="!metricsLoading && !metricsData" style="padding: 60px 0;">
+                            <el-empty description="暂无指标体系数据" />
+                        </div>
                     </div>
                 </div>
-            </main>
+
+                <!-- 数据库视图 -->
+                <div class="view-container schema-view" v-else-if="currentView === 'database'">
+                    <div class="view-header">
+                        <h2>数据库 Schema</h2>
+                        <p>展示当前数据库表结构定义</p>
+                    </div>
+                    <div class="view-content">
+                        <div v-if="schemaLoading" style="padding: 40px;">
+                            <el-skeleton :rows="10" animated />
+                        </div>
+                        <div v-if="!schemaLoading && schemaData" class="schema-list">
+                            <div v-for="(table, tableName) in schemaData" :key="tableName" class="schema-table">
+                                <div class="table-header">
+                                    <span class="table-name">{{ tableName }}</span>
+                                    <span class="table-desc" v-if="table.description">{{ table.description }}</span>
+                                </div>
+                                <div class="table-fields">
+                                    <div class="field-header">
+                                        <span class="field-name">字段名</span>
+                                        <span class="field-type">类型</span>
+                                        <span class="field-desc">描述</span>
+                                    </div>
+                                    <div v-for="field in table.fields" :key="field.name" class="field-row">
+                                        <span class="field-name">
+                                            {{ field.name }}
+                                            <el-tag v-if="field.is_primary" type="danger" size="small">PK</el-tag>
+                                            <el-tag v-if="field.is_foreign" type="warning" size="small">FK</el-tag>
+                                        </span>
+                                        <span class="field-type">{{ field.type }}</span>
+                                        <span class="field-desc">{{ field.description || '-' }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="!schemaLoading && !schemaData" style="padding: 60px 0;">
+                            <el-empty description="暂无 Schema 数据" />
+                        </div>
+                    </div>
+                </div>
             </main>
         </div>
 
         <!-- 数据展示弹窗 -->
-        <el-dialog v-model="dialogVisible" title="查询数据详情" width="80%">
-            <el-table :data="tableData" border stripe style="width: 100%" height="500">
+        <el-dialog v-model="dialogVisible" title="查询数据详情" width="75%" align-center>
+            <el-table :data="tableData" border stripe style="width: 100%"
+                :height="nestedTableSections.length > 0 ? 220 : 500">
                 <el-table-column v-for="(val, key) in (tableData.length > 0 ? tableData[0] : {})" :key="key" :prop="key"
                     :label="key" min-width="120" show-overflow-tooltip>
                 </el-table-column>
             </el-table>
+
+            <div v-for="section in nestedTableSections" :key="section.key" class="nested-section">
+                <div class="nested-section-title">{{ section.title }}</div>
+                <el-table :data="section.data" border stripe style="width: 100%" max-height="280">
+                    <el-table-column v-for="(val, key) in (section.data.length > 0 ? section.data[0] : {})"
+                        :key="`${section.key}-${key}`" :prop="key" :label="key" min-width="120" show-overflow-tooltip>
+                    </el-table-column>
+                </el-table>
+            </div>
+        </el-dialog>
+
+        <!-- SQL 展示弹窗 -->
+        <el-dialog v-model="sqlDialogVisible" title="生成的执行代码 (SQL/Python)" width="75%" align-center>
+            <div class="sql-code">
+                <pre>{{ currentSql }}</pre>
+            </div>
+        </el-dialog>
+
+        <!-- 图表展示弹窗 -->
+        <el-dialog v-model="chartDialogVisible" title="相关数据图表" width="92%" align-center class="chart-dialog">
+            <div id="dialog-chart-container" class="chart-container"></div>
+            <div class="chart-reasoning" v-if="currentChartReasoning">
+                <div class="chart-reasoning-title">图表解读：</div>
+                {{ currentChartReasoning }}
+            </div>
         </el-dialog>
     </div>
 
     <!-- 引入 Vue 3 和 Element Plus JS -->
+    <script>
+        // 核心鉴权拦截（在 Vue 初始化前执行）
+        // 使用与 script.js 一致的 Key
+        const appMode = localStorage.getItem('text2sql_app_mode_v1');
+        const authToken = localStorage.getItem('text2sql_auth_token_v1');
+        if (appMode !== 'guest' && !authToken) {
+            window.location.href = '/login';
+        }
+
+        // Spatial 3D Point-Tracking Logic (Direct DOM Transform overrides)
+        document.addEventListener('mousemove', (e) => {
+            const cards = document.querySelectorAll('.quick-card, .clarification-panel, .welcome-emblem');
+            cards.forEach(card => {
+                const rect = card.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                const isHovering = x >= 0 && x <= rect.width && y >= 0 && y <= rect.height;
+                if (isHovering) {
+                    const centerX = rect.width / 2;
+                    const centerY = rect.height / 2;
+                    const rotateX = -((y - centerY) / centerY) * 12; // Native inverted Y
+                    const rotateY = ((x - centerX) / centerX) * 12;
+
+                    card.style.transform = `perspective(1000px) translateY(-5px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.03, 1.03, 1.03)`;
+                    card.style.transition = `none`; // Remove transition during dynamic tracking
+                    card.style.zIndex = `10`;
+                    card.style.boxShadow = `0 30px 60px rgba(0,0,0,0.1), 0 0 0 1px inset rgba(255,255,255,0.4)`;
+                } else {
+                    card.style.transform = ``;
+                    card.style.transition = `transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)`;
+                    card.style.zIndex = ``;
+                    card.style.boxShadow = ``;
+                }
+            });
+        });
+
+        // Global listener for syntax copy button injection
+        document.addEventListener('mouseover', (e) => {
+            const pre = e.target.closest('.response-text pre') || e.target.closest('.sql-code pre');
+            if (pre && !pre.querySelector('.copy-code-btn')) {
+                const btn = document.createElement('button');
+                btn.className = 'copy-code-btn';
+                btn.innerHTML = 'Copy code';
+                btn.onclick = () => {
+                    const codeBlock = pre.querySelector('code');
+                    const textToCopy = codeBlock ? codeBlock.innerText : pre.innerText;
+                    navigator.clipboard.writeText(textToCopy);
+                    btn.innerHTML = 'Copied ✓';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.innerHTML = 'Copy code';
+                        btn.classList.remove('copied');
+                    }, 2000);
+                };
+                pre.appendChild(btn);
+            }
+        });
+    </script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> <!-- 脚本 -->
-    <script src="/ui/script.js?v=8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    <script src="/ui/script.js?v=30"></script>
 </body>
 
 </html>
