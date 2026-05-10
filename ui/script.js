@@ -23,6 +23,18 @@ const app = createApp({
         const MAX_PERSIST_MESSAGES = 80;
         const MAX_THREAD_COUNT = 50;
 
+        // 当前视图状态
+        const currentView = ref('chat'); // 'chat' | 'modeling' | 'database'
+
+        // 建模页面数据
+        const metricsData = ref(null);
+        const metricsLoading = ref(false);
+        const metricsExpanded = reactive({});
+
+        // 数据库页面数据
+        const schemaData = ref(null);
+        const schemaLoading = ref(false);
+
         // 当前回答的步骤（用于流式显示）
         const currentSteps = ref([]);
 
@@ -1487,6 +1499,64 @@ const app = createApp({
             window.removeEventListener('beforeunload', saveClientState);
         });
 
+        // 加载指标体系数据
+        const loadMetricsData = async () => {
+            if (metricsData.value) return;
+            metricsLoading.value = true;
+            try {
+                const response = await fetch('/api/metrics');
+                if (response.ok) {
+                    const data = await response.json();
+                    metricsData.value = data;
+                    // 默认全部展开
+                    Object.keys(data).forEach(key => {
+                        metricsExpanded[key] = true;
+                    });
+                } else {
+                    ElMessage.error('加载指标体系失败');
+                }
+            } catch (e) {
+                console.error('加载指标体系失败:', e);
+                ElMessage.error('加载指标体系失败');
+            } finally {
+                metricsLoading.value = false;
+            }
+        };
+
+        const toggleMetricsLevel1 = (name) => {
+            metricsExpanded[name] = !metricsExpanded[name];
+        };
+
+        // 加载数据库Schema
+        const loadSchemaData = async () => {
+            if (schemaData.value) return;
+            schemaLoading.value = true;
+            try {
+                const response = await fetch('/api/schema');
+                if (response.ok) {
+                    const data = await response.json();
+                    schemaData.value = data;
+                } else {
+                    ElMessage.error('加载数据库结构失败');
+                }
+            } catch (e) {
+                console.error('加载数据库结构失败:', e);
+                ElMessage.error('加载数据库结构失败');
+            } finally {
+                schemaLoading.value = false;
+            }
+        };
+
+        // 切换视图
+        const switchView = (view) => {
+            currentView.value = view;
+            if (view === 'modeling') {
+                loadMetricsData();
+            } else if (view === 'database') {
+                loadSchemaData();
+            }
+        };
+
         return {
             messages,
             inputMessage,
@@ -1533,7 +1603,20 @@ const app = createApp({
             clearClarificationSelection,
             submitClarificationSelection,
             toggleMetricSql,
-            copySql
+            copySql,
+            // 视图相关
+            currentView,
+            switchView,
+            // 建模页面
+            metricsData,
+            metricsLoading,
+            metricsExpanded,
+            loadMetricsData,
+            toggleMetricsLevel1,
+            // 数据库页面
+            schemaData,
+            schemaLoading,
+            loadSchemaData
         };
     }
 });

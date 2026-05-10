@@ -936,6 +936,30 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/api/metrics")
+async def get_metrics():
+    """获取指标体系数据"""
+    try:
+        metrics_path = config.paths.metrics_path
+        with open(metrics_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"加载指标体系失败: {str(e)}")
+
+
+@app.get("/api/schema")
+async def get_schema():
+    """获取数据库 Schema"""
+    try:
+        schema_path = config.paths.schema_path
+        with open(schema_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"加载 Schema 失败: {str(e)}")
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时清理所有会话资源"""

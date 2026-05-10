@@ -16,7 +16,7 @@
         rel="stylesheet">
 
     <!-- 自定义样式 -->
-    <link rel="stylesheet" href="style.css?v=39">
+    <link rel="stylesheet" href="style.css?v=52">
 </head>
 
 <body>
@@ -138,19 +138,19 @@
                     <span>Text2SQL 洞察中枢</span>
                 </div>
                 <div class="nav-items">
-                    <a href="#" class="nav-item active">
+                    <a href="#" class="nav-item" :class="{active: currentView === 'chat'}" @click.prevent="switchView('chat')">
                         <svg class="icon">
                             <use xlink:href="#icon-chart"></use>
                         </svg>
                         <span>首页</span>
                     </a>
-                    <a href="#" class="nav-item">
+                    <a href="#" class="nav-item" :class="{active: currentView === 'modeling'}" @click.prevent="switchView('modeling')">
                         <svg class="icon">
                             <use xlink:href="#icon-code"></use>
                         </svg>
                         <span>建模</span>
                     </a>
-                    <a href="#" class="nav-item">
+                    <a href="#" class="nav-item" :class="{active: currentView === 'database'}" @click.prevent="switchView('database')">
                         <svg class="icon">
                             <use xlink:href="#icon-table"></use>
                         </svg>
@@ -220,7 +220,8 @@
 
             <!-- 主内容区 -->
             <main class="content-area">
-                <div class="chat-wrapper" ref="chatWrapper">
+                <!-- 聊天视图 -->
+                <div class="chat-wrapper" ref="chatWrapper" v-if="currentView === 'chat'">
 
                     <!-- 欢迎页 -->
                     <div class="welcome-view" v-if="messages.length === 0">
@@ -512,32 +513,111 @@
 
                         <!-- Removed separate loading div as it is now part of tempMessage -->
                     </div>
+
+                    <!-- 底部输入框 -->
+                    <div class="input-area">
+                        <div class="input-container">
+                            <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 4}" placeholder="询问任何问题以探索您的数据..."
+                                v-model="inputMessage" @keydown.enter.native.prevent="handleEnter" resize="none">
+                            </el-input>
+
+                            <!-- 发送按钮 (不在加载时显示) -->
+                            <el-button type="primary" class="send-btn" @click="handleSend" v-if="!isLoading">
+                                <svg class="icon" style="font-size:16px">
+                                    <use xlink:href="#icon-send"></use>
+                                </svg>
+                            </el-button>
+
+                            <!-- 停止按钮 (加载时显示) -->
+                            <el-button type="danger" class="send-btn stop-btn" @click="stopQuery" v-if="isLoading">
+                                <svg class="icon" style="font-size:16px">
+                                    <use xlink:href="#icon-stop"></use>
+                                </svg>
+                                停止
+                            </el-button>
+                        </div>
+                        <div class="input-footer">
+                            AI 生成的内容可能不准确，请核实重要信息
+                        </div>
+                    </div>
                 </div>
 
-                <!-- 底部输入框 -->
-                <div class="input-area">
-                    <div class="input-container">
-                        <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 4}" placeholder="询问任何问题以探索您的数据..."
-                            v-model="inputMessage" @keydown.enter.native.prevent="handleEnter" resize="none">
-                        </el-input>
-
-                        <!-- 发送按钮 (不在加载时显示) -->
-                        <el-button type="primary" class="send-btn" @click="handleSend" v-if="!isLoading">
-                            <svg class="icon" style="font-size:16px">
-                                <use xlink:href="#icon-send"></use>
-                            </svg>
-                        </el-button>
-
-                        <!-- 停止按钮 (加载时显示) -->
-                        <el-button type="danger" class="send-btn stop-btn" @click="stopQuery" v-if="isLoading">
-                            <svg class="icon" style="font-size:16px">
-                                <use xlink:href="#icon-stop"></use>
-                            </svg>
-                            停止
-                        </el-button>
+                <!-- 建模视图 -->
+                <div class="view-container modeling-view" v-else-if="currentView === 'modeling'">
+                    <div class="view-header">
+                        <h2>指标体系建模</h2>
+                        <p>展示当前教育数据指标体系结构</p>
                     </div>
-                    <div class="input-footer">
-                        AI 生成的内容可能不准确，请核实重要信息
+                    <div class="view-content">
+                        <div v-if="metricsLoading" style="padding: 40px;">
+                            <el-skeleton :rows="10" animated />
+                        </div>
+                        <div v-if="!metricsLoading && metricsData" class="metrics-tree">
+                            <div v-for="(level1, level1Name) in metricsData" :key="level1Name" class="metrics-level1">
+                                <div class="level1-header" @click="toggleMetricsLevel1(level1Name)">
+                                    <span class="level1-dot"></span>
+                                    <div class="level1-text">
+                                        <span class="level1-title">{{ level1Name }}</span>
+                                        <span class="level1-desc" v-if="level1['一级指标解释']">{{ level1['一级指标解释'] }}</span>
+                                    </div>
+                                    <span class="level1-arrow" :class="{expanded: metricsExpanded[level1Name]}">▶</span>
+                                </div>
+                                <div v-if="level1['二级指标'] && metricsExpanded[level1Name]" class="level2-list">
+                                    <div v-for="(level2, level2Name) in level1['二级指标']" :key="level2Name" class="metrics-level2">
+                                        <span class="level2-dot"></span>
+                                        <div class="level2-text">
+                                            <span class="level2-title">{{ level2Name }}</span>
+                                            <div class="level2-desc" v-if="level2['二级指标解释']">
+                                                {{ level2['二级指标解释'] }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="!metricsLoading && !metricsData" style="padding: 60px 0;">
+                            <el-empty description="暂无指标体系数据" />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据库视图 -->
+                <div class="view-container schema-view" v-else-if="currentView === 'database'">
+                    <div class="view-header">
+                        <h2>数据库 Schema</h2>
+                        <p>展示当前数据库表结构定义</p>
+                    </div>
+                    <div class="view-content">
+                        <div v-if="schemaLoading" style="padding: 40px;">
+                            <el-skeleton :rows="10" animated />
+                        </div>
+                        <div v-if="!schemaLoading && schemaData" class="schema-list">
+                            <div v-for="(table, tableName) in schemaData" :key="tableName" class="schema-table">
+                                <div class="table-header">
+                                    <span class="table-name">{{ tableName }}</span>
+                                    <span class="table-desc" v-if="table.description">{{ table.description }}</span>
+                                </div>
+                                <div class="table-fields">
+                                    <div class="field-header">
+                                        <span class="field-name">字段名</span>
+                                        <span class="field-type">类型</span>
+                                        <span class="field-desc">描述</span>
+                                    </div>
+                                    <div v-for="field in table.fields" :key="field.name" class="field-row">
+                                        <span class="field-name">
+                                            {{ field.name }}
+                                            <el-tag v-if="field.is_primary" type="danger" size="small">PK</el-tag>
+                                            <el-tag v-if="field.is_foreign" type="warning" size="small">FK</el-tag>
+                                        </span>
+                                        <span class="field-type">{{ field.type }}</span>
+                                        <span class="field-desc">{{ field.description || '-' }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="!schemaLoading && !schemaData" style="padding: 60px 0;">
+                            <el-empty description="暂无 Schema 数据" />
+                        </div>
                     </div>
                 </div>
             </main>
@@ -645,7 +725,7 @@
     <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-    <script src="/ui/script.js?v=19"></script>
+    <script src="/ui/script.js?v=30"></script>
 </body>
 
 </html>
