@@ -64,6 +64,7 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     enable_suggestions: bool = False
     workspace_id: Optional[str] = None
+    thread_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -188,7 +189,8 @@ def get_or_create_session(session_id: str, workspace_id: Optional[str] = None):
             "session_key": session_key,
             "graph": graph,
             "state": None,
-            "waiting_for_clarification": False
+            "waiting_for_clarification": False,
+            "waiting_for_plan_review": False
         }
 
     return sessions[session_key]
@@ -209,6 +211,7 @@ NODE_DISPLAY_NAMES = {
     "metric_executor": "指标执行",
     "metric_observer": "指标观察",
     "metric_cleanup": "指标清理",
+    "plan_review_handler": "计划审核",
     "data_analyzer": "代码生成",
     "python_executor": "代码执行",
     "verifier": "结果验证",
@@ -411,7 +414,7 @@ async def _stream_graph_events(
 
         for event in graph.stream(initial_state, config=config_dict):
             for node_name, node_output in event.items():
-                if node_output:
+                if node_output and isinstance(node_output, dict):
                     accumulated_state.update(node_output)
 
                 if node_name not in NODE_DISPLAY_NAMES:
@@ -429,12 +432,39 @@ async def _stream_graph_events(
                 current_step += 1
                 await asyncio.sleep(0.1)
 
+        # 检查是否有 interrupt（计划审核暂停）
+        interrupt_data = None
+        try:
+            snapshot = graph.get_state(config_dict)
+            if snapshot and snapshot.tasks:
+                for task in snapshot.tasks:
+                    if task.interrupts:
+                        interrupt_value = task.interrupts[0].value
+                        if isinstance(interrupt_value, dict) and interrupt_value.get("plan_nodes"):
+                            interrupt_data = interrupt_value
+                            break
+        except Exception as e:
+            print(f"DEBUG: get_state check failed: {e}")
+
+        if interrupt_data:
+            plan_review_event = {
+                "type": "plan_review",
+                "plan_nodes": interrupt_data.get("plan_nodes", []),
+                "message": "请审核以下查询计划",
+            }
+            yield f"data: {json.dumps(plan_review_event, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
+            session["state"] = accumulated_state
+            session["waiting_for_plan_review"] = True
+            yield "data: [DONE]\n\n"
+            return
+
         if accumulated_state:
             session["state"] = accumulated_state
             final_state = accumulated_state
             need_clarification = final_state.get("ambiguity_detected", False)
             if update_waiting_for_clarification:
                 session["waiting_for_clarification"] = need_clarification
+                session["waiting_for_plan_review"] = False
 
             asyncio.create_task(
                 record_log(
@@ -543,7 +573,9 @@ async def chat_stream(request: ChatRequest):
 
     session["state"] = None
     session["waiting_for_clarification"] = False
-    session["current_thread_id"] = f"query_{uuid.uuid4().hex[:8]}"
+    session["waiting_for_plan_review"] = False
+    # 使用前端传来的 thread_id，保留对话历史；若无则生成新的
+    session["current_thread_id"] = request.thread_id or f"query_{uuid.uuid4().hex[:8]}"
 
     initial_state: AgentState = {
         "user_query": request.message,
@@ -781,6 +813,176 @@ async def generate_chart(request: ChartRequest):
         print(f"图表生成错误: {traceback.format_exc()}")
         return {"chart_spec": None, "reasoning": f"生成失败: {str(e)}"}
 
+
+
+@app.post("/api/chat/cancel-plan")
+async def cancel_plan_review(session_id: str = "default", workspace_id: Optional[str] = None, thread_id: Optional[str] = None):
+    """取消计划审核等待状态，恢复正常流程"""
+    session_key = _build_session_key(session_id, workspace_id)
+    if session_key in sessions:
+        sessions[session_key]["waiting_for_plan_review"] = False
+        if thread_id:
+            sessions[session_key]["current_thread_id"] = thread_id
+    return {"message": "计划审核已取消"}
+
+
+class PlanResumeRequest(BaseModel):
+    session_id: str = "default"
+    workspace_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    approved: bool
+    adjustments: Optional[str] = None
+
+
+@app.post("/api/chat/resume-plan")
+async def resume_plan_review(request: PlanResumeRequest):
+    """使用 LangGraph Command(resume) 恢复计划审核"""
+    from langgraph.types import Command
+
+    session = get_or_create_session(request.session_id, request.workspace_id)
+    if not session["waiting_for_plan_review"]:
+        raise HTTPException(status_code=400, detail="当前无待审核计划")
+
+    graph = session["graph"]
+    session["waiting_for_plan_review"] = False
+
+    # 优先使用前端传来的 thread_id，否则用 session 中保存的
+    if request.thread_id:
+        session["current_thread_id"] = request.thread_id
+    thread_id = session.get("current_thread_id") or session.get("session_key", "default_thread")
+    config_dict = {
+        "recursion_limit": 50,
+        "configurable": {"thread_id": thread_id}
+    }
+
+    # 构造 resume decision
+    if request.approved:
+        decision = {"approved": True, "adjustments": ""}
+    else:
+        decision = {"approved": False, "adjustments": request.adjustments or ""}
+
+    async def resume_stream() -> AsyncGenerator[str, None]:
+        async for chunk in _stream_graph_events_with_resume(
+            graph,
+            decision,
+            session,
+            config_dict,
+        ):
+            yield chunk
+
+    return StreamingResponse(resume_stream(), media_type="text/event-stream")
+
+
+async def _stream_graph_events_with_resume(
+    graph,
+    decision: dict[str, Any],
+    session: dict[str, Any],
+    config_dict: dict[str, Any],
+) -> AsyncGenerator[str, None]:
+    """使用 Command(resume) 从中断恢复并流式输出事件"""
+    from langgraph.types import Command
+
+    try:
+        yield f"data: {json.dumps({'type': 'start', 'message': '继续处理计划审核...'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.1)
+
+        # 从 checkpoint 获取完整状态作为 accumulated_state 的基础
+        accumulated_state: dict[str, Any] = {}
+        try:
+            snapshot = graph.get_state(config_dict)
+            if snapshot and snapshot.values:
+                accumulated_state = dict(snapshot.values)
+        except Exception as e:
+            print(f"DEBUG: resume get_state for init failed: {e}")
+
+        current_step = 1
+
+        for event in graph.stream(Command(resume=decision), config=config_dict):
+            for node_name, node_output in event.items():
+                if node_output and isinstance(node_output, dict):
+                    accumulated_state.update(node_output)
+
+                if node_name not in NODE_DISPLAY_NAMES:
+                    continue
+
+                step_data = _build_step_data(
+                    node_name,
+                    node_output or {},
+                    current_step,
+                    accumulated_state=accumulated_state,
+                )
+
+                yield f"data: {json.dumps(step_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
+                current_step += 1
+                await asyncio.sleep(0.1)
+
+        # 检查是否又有 interrupt（用户调整后的二次审核）
+        interrupt_data = None
+        try:
+            snapshot = graph.get_state(config_dict)
+            if snapshot and snapshot.tasks:
+                for task in snapshot.tasks:
+                    if task.interrupts:
+                        interrupt_value = task.interrupts[0].value
+                        if isinstance(interrupt_value, dict) and interrupt_value.get("plan_nodes"):
+                            interrupt_data = interrupt_value
+                            break
+        except Exception as e:
+            print(f"DEBUG: resume get_state check failed: {e}")
+
+        if interrupt_data:
+            plan_review_event = {
+                "type": "plan_review",
+                "plan_nodes": interrupt_data.get("plan_nodes", []),
+                "message": "请审核调整后的查询计划",
+            }
+            yield f"data: {json.dumps(plan_review_event, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
+            session["state"] = accumulated_state
+            session["waiting_for_plan_review"] = True
+            yield "data: [DONE]\n\n"
+            return
+
+        if accumulated_state:
+            session["state"] = accumulated_state
+            final_state = accumulated_state
+
+            asyncio.create_task(
+                record_log(
+                    final_state,
+                    workspace_id=final_state.get("workspace_id"),
+                )
+            )
+
+            final_data = final_state.get("analysis_result")
+            if not final_data:
+                final_data = final_state.get("execution_result")
+
+            total_count = final_state.get("total_count", 0)
+            is_truncated = final_state.get("is_truncated", False)
+
+            result_data = {
+                'type': 'result',
+                'response': final_state.get("final_response", ""),
+                'sql': final_state.get("generated_sql"),
+                'python_code': final_state.get("analysis_code"),
+                'need_clarification': final_state.get("ambiguity_detected", False),
+                'intent_type': _serialize_intent_type(final_state.get("intent_type")),
+                'data': final_data,
+                'total_count': total_count,
+                'is_truncated': is_truncated,
+                'suggested_questions': final_state.get("suggested_questions", [])
+            }
+
+            yield f"data: {json.dumps(result_data, ensure_ascii=False, cls=CustomJSONEncoder)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"resume 流式执行错误: {error_detail}")
+        error_data = {'type': 'error', 'message': str(e)}
+        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
 
 @app.post("/api/reset")

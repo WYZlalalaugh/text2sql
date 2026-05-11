@@ -166,7 +166,7 @@ class AgentState(TypedDict, total=False):
     materialized_artifacts: dict[str, dict[str, object]] | None
 
     # 循环状态 - 跟踪当前循环阶段
-    loop_status: Literal["planning", "executing", "observing", "completed", "failed", "adjusting"] | None
+    loop_status: Literal["planning", "executing", "observing", "completed", "failed", "adjusting", "awaiting_review"] | None
 
     # 步骤级别的详细状态 (Oracle建议: pending | running | succeeded | failed_execution | failed_validation)
     # 用于精确控制步骤流转，确保失败步骤不会进入下游
@@ -193,4 +193,10 @@ class AgentState(TypedDict, total=False):
     # 物化表的 Schema 缓存 - 用于后续步骤引用上游表结构
     # key: step_id, value: {table_name, columns: [{name, type, ...}]}
     materialized_schemas: dict[str, dict[str, object]] | None
+
+    # ============ 计划审核字段 ============
+    # 计划是否等待用户审核
+    plan_review_pending: bool | None
+    # 用户对计划的审核决策: {"approved": bool, "adjustments": str}
+    plan_review_decision: dict[str, object] | None
 

@@ -38,16 +38,25 @@ def create_metric_loop_planner(llm_client: SupportsInvoke | None = None):
         循环规划节点 - 生成初始计划或根据观察结果调整计划
 
         职责:
-        1. 首次进入：调用LLM生成初始计划（plan_nodes）
-        2. 执行成功：推进到下一步
-        3. 执行失败：调用LLM调整计划或重试
-        4. 循环结束：返回 complete 或 fail
+        1. 首次进入：调用LLM生成初始计划（plan_nodes），等待用户审核
+        2. 用户调整后：调用LLM重新生成计划，再次等待审核
+        3. 执行成功：推进到下一步
+        4. 执行失败：调用LLM调整计划或重试
+        5. 循环结束：返回 complete 或 fail
         """
         loop_status = state.get("loop_status", "planning")
         plan_nodes = _coerce_plan_nodes(state.get("metric_plan_nodes"))
         observations = _coerce_observations(state.get("planner_observations"))
         retry_counters = _coerce_retry_counters(state.get("retry_counters"))
         loop_iteration = _coerce_int(state.get("loop_iteration"), 0)
+
+        # ===== 用户调整计划后重新生成 =====
+        plan_review_decision = state.get("plan_review_decision")
+        if plan_review_decision and isinstance(plan_review_decision, dict):
+            approved = plan_review_decision.get("approved")
+            if approved is False or approved == "false":
+                adjustments = _coerce_str(plan_review_decision.get("adjustments"), "")
+                return _regenerate_plan_from_review(state, llm_client, adjustments, loop_iteration)
 
         # 检查最大迭代次数
         if loop_iteration >= MAX_ITERATIONS:
@@ -149,6 +158,101 @@ def create_metric_loop_planner(llm_client: SupportsInvoke | None = None):
     return metric_loop_planner_node
 
 
+def _regenerate_plan_from_review(
+    state: AgentState,
+    llm_client: SupportsInvoke | None,
+    adjustments: str,
+    loop_iteration: int,
+) -> dict[str, object]:
+    """基于用户调整描述重新生成计划，保持原有格式，直接返回给用户再次审核"""
+    from prompts.query_planner_prompt import build_plan_review_adjustment_prompt
+
+    if not llm_client:
+        return {
+            "loop_decision": {"decision": "fail", "reason": "没有LLM客户端，无法重新生成计划"},
+            "loop_status": "failed",
+            "plan_review_decision": None,
+            "plan_review_pending": None,
+            "current_node": "metric_loop_planner",
+        }
+
+    original_plan = _coerce_plan_nodes(state.get("metric_plan_nodes"))
+
+    try:
+        schema_text = _resolve_schema_context(state)
+        original_plan_json = json.dumps(original_plan, ensure_ascii=False)
+
+        query = state.get("user_query", "")
+        metrics_context = state.get("metrics_context")
+        if metrics_context and isinstance(metrics_context, list) and len(metrics_context) > 0:
+            metrics_str = json.dumps({"selected_indicators": metrics_context}, ensure_ascii=False)
+        else:
+            metrics_str = "{}"
+
+        prompt = build_plan_review_adjustment_prompt(
+            original_plan=original_plan_json,
+            adjustments=adjustments,
+            metrics=metrics_str,
+            schema=schema_text,
+            query=query,
+        )
+
+        response = llm_client.invoke(prompt)
+        content = _response_to_text(response)
+        plan_data = _extract_json(content)
+
+        if not plan_data or "plan_nodes" not in plan_data:
+            # LLM未能返回有效计划，保留原计划让用户重新审核
+            logger.warning(f"计划调整失败: LLM返回格式无效，保留原计划")
+            return {
+                "metric_plan_nodes": original_plan,
+                "loop_decision": {"decision": "awaiting_review", "reason": "计划调整失败，保留原计划"},
+                "loop_status": "awaiting_review",
+                "loop_iteration": loop_iteration + 1,
+                "plan_review_decision": None,
+                "plan_review_pending": None,
+                "current_node": "metric_loop_planner",
+            }
+
+        new_plan_nodes = _coerce_plan_nodes(plan_data.get("plan_nodes"))
+
+        if not new_plan_nodes:
+            logger.warning(f"计划调整返回空计划，保留原计划")
+            return {
+                "metric_plan_nodes": original_plan,
+                "loop_decision": {"decision": "awaiting_review", "reason": "调整计划为空，保留原计划"},
+                "loop_status": "awaiting_review",
+                "loop_iteration": loop_iteration + 1,
+                "plan_review_decision": None,
+                "plan_review_pending": None,
+                "current_node": "metric_loop_planner",
+            }
+
+        logger.info(f"计划已根据用户调整重新生成，包含 {len(new_plan_nodes)} 个步骤")
+        return {
+            "metric_plan_nodes": new_plan_nodes,
+            "loop_decision": {"decision": "awaiting_review", "reason": "计划已根据用户调整重新生成，等待审核"},
+            "loop_status": "awaiting_review",
+            "loop_iteration": loop_iteration + 1,
+            "plan_review_decision": None,
+            "plan_review_pending": None,
+            "current_node": "metric_loop_planner",
+        }
+
+    except Exception as e:
+        logger.error(f"重新生成计划失败: {e}")
+        # 保留原计划让用户重新审核
+        return {
+            "metric_plan_nodes": original_plan,
+            "loop_decision": {"decision": "awaiting_review", "reason": f"重新生成失败: {str(e)}，保留原计划"},
+            "loop_status": "awaiting_review",
+            "loop_iteration": loop_iteration + 1,
+            "plan_review_decision": None,
+            "plan_review_pending": None,
+            "current_node": "metric_loop_planner",
+        }
+
+
 def _generate_initial_plan(
     state: AgentState,
     llm_client: SupportsInvoke | None,
@@ -169,11 +273,11 @@ def _generate_initial_plan(
                 "schema_context": schema_text,
                 "current_step_id": _coerce_str(plan_nodes[0].get("step_id"), ""),
                 "loop_decision": {
-                    "decision": "continue",
-                    "reason": "使用上游传入的计划",
+                    "decision": "awaiting_review",
+                    "reason": "使用上游传入的计划，等待用户审核",
                     "next_step_id": _coerce_str(plan_nodes[0].get("step_id"), ""),
                 },
-                "loop_status": "executing",
+                "loop_status": "awaiting_review",
                 "loop_iteration": loop_iteration + 1,
                 "current_node": "metric_loop_planner",
             }
@@ -226,17 +330,17 @@ def _generate_initial_plan(
                 "current_node": "metric_loop_planner",
             }
 
-        # 返回初始计划
+        # 返回初始计划 - 等待用户审核
         return {
             "metric_plan_nodes": plan_nodes,
             "schema_context": schema_text,
             "current_step_id": plan_nodes[0].get("step_id"),
             "loop_decision": {
-                "decision": "continue",
-                "reason": "初始计划生成成功",
+                "decision": "awaiting_review",
+                "reason": "初始计划生成成功，等待用户审核",
                 "next_step_id": plan_nodes[0].get("step_id"),
             },
-            "loop_status": "executing",
+            "loop_status": "awaiting_review",
             "loop_iteration": loop_iteration + 1,
             "current_node": "metric_loop_planner",
         }
