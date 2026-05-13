@@ -10,6 +10,7 @@ import os
 import time
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from state import AgentState, IntentType
 from agents.intent_classifier import create_intent_classifier
@@ -179,6 +180,43 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             "clarification_question": clarification_question,
             "current_node": "clarification_return"
         }
+
+    # 定义计划审核节点（使用 LangGraph interrupt 实现人工审核）
+    def plan_review_handler_node(state: AgentState) -> Dict[str, Any]:
+        """计划审核节点 - 使用 interrupt 暂停等待用户审核"""
+        from langgraph.types import interrupt
+
+        plan_nodes = state.get("metric_plan_nodes") or []
+
+        # interrupt 暂停执行并将计划发送给前端
+        # 恢复时返回用户的审核决策
+        decision = interrupt({"plan_nodes": plan_nodes})
+
+        if decision and decision.get("approved"):
+            # 用户批准 → 开始执行
+            first_step_id = ""
+            if plan_nodes and isinstance(plan_nodes, list) and len(plan_nodes) > 0:
+                first_node = plan_nodes[0]
+                first_step_id = str(first_node.get("step_id", "")) if isinstance(first_node, dict) else ""
+            return {
+                "loop_status": "executing",
+                "current_step_id": first_step_id,
+                "loop_decision": {
+                    "decision": "continue",
+                    "reason": "用户已批准计划，开始执行",
+                    "next_step_id": first_step_id,
+                },
+                "plan_review_pending": None,
+                "current_node": "plan_review_handler",
+            }
+
+        # 用户要求调整 → 由 metric_loop_planner 重新生成后再回到本节点审核
+        return {
+            "loop_status": "awaiting_review",
+            "plan_review_pending": True,
+            "plan_review_decision": decision,
+            "current_node": "plan_review_handler",
+        }
     
     # 定义清理节点
     def cleanup_node(state: AgentState) -> Dict[str, Any]:
@@ -197,7 +235,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     # 定义初始化节点 (设置默认值)
     def init_node(state: AgentState) -> Dict[str, Any]:
         """初始化状态默认值 - 重置所有请求级字段避免状态污染"""
-        
+
         # 获取会话级持久字段（需要保留的）
         workspace_id = state.get("workspace_id")
         session_id = state.get("session_id")
@@ -211,7 +249,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             clarification_count = incoming_clarification_count if preserve_clarification else 0
         else:
             clarification_count = 0
-        
+
         # 返回全新状态，只保留会话级字段
         return {
             # === 会话级持久字段（跨请求保留）===
@@ -219,22 +257,22 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             "session_id": session_id,
             "user_id": user_id,
             "messages": messages,
-            
+
             # === 用户输入（新请求）===
             "user_query": state.get("user_query", ""),
             "clarification_response": incoming_clarification if preserve_clarification else None,
-            
+
             # === 意图和分类（新请求）===
             "intent_type": None,
             "intent_confidence": 0.0,
-            
+
             # === 歧义检测（新请求）===
             "ambiguity_detected": False,
             "ambiguity_details": [],
             "clarification_question": None,
             "refined_intent": None,
             "clarification_count": clarification_count,
-            
+
             # === 规划相关（新请求）===
             "query_plan": {},
             "reasoning_plan": "",
@@ -242,12 +280,12 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             "target_fields": [],
             "planning_error": None,
             "metrics_context": None,
-            
+
             # === 上下文组装（新请求）===
             "schema_context": None,
             "assembled_prompt": None,
             "context_assembled": False,
-            
+
             # === Metric 循环相关（新请求）===
             "metric_plan_nodes": [],
             "current_step_id": None,
@@ -261,12 +299,16 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             "loop_iteration": 0,
             "loop_status": "planning",
             "loop_decision": None,
-            
+
+            # === 计划审核相关（新请求）===
+            "plan_review_pending": None,
+            "plan_review_decision": None,
+
             # === SQL 生成和执行（新请求）===
             "generated_sql": "",
             "execution_result": None,
             "execution_error": None,
-            
+
             # === 纠错和验证（新请求）===
             "correction_count": 0,
             "verification_count": 0,
@@ -275,22 +317,22 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
             "analysis_result": None,
             "analysis_error": None,
             "analysis_code": None,
-            
+
             # === 最终响应（新请求）===
             "final_response": None,
             "recommended_questions": [],
-            
+
             # === 遗留兼容字段（新请求）===
             "execution_path": state.get("execution_path"),
             "legacy_fallback_triggered": False,
             "legacy_fallback_reason": None,
             "legacy_fallback_count": 0,
-            
+
             # === 配置和开关（新请求）===
             "enable_suggestions": state.get("enable_suggestions", False),
             "enable_streaming": state.get("enable_streaming", False),
             "chart_config": state.get("chart_config"),
-            
+
             # === 元数据 ===
             "current_node": "init",
             "start_time": int(time.time() * 1000),
@@ -305,6 +347,7 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     workflow.add_node("ambiguity_checker", ambiguity_checker)
     workflow.add_node("query_planner", query_planner)
     workflow.add_node("clarification_return", clarification_return_node)
+    workflow.add_node("plan_review_handler", plan_review_handler_node)
     workflow.add_node("context_assembler", context_assembler)
     workflow.add_node("sql_generator", sql_generator)
     workflow.add_node("sql_executor", sql_executor)
@@ -322,10 +365,10 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     
     # 设置入口点
     workflow.set_entry_point("init")
-    
+
     # init -> intent_classifier
     workflow.add_edge("init", "intent_classifier")
-    
+
     # 意图分类后的条件路由
     def route_after_intent(state: AgentState) -> Literal["response_generator", "ambiguity_checker", "query_planner"]:
         intent_type = state.get("intent_type", IntentType.CHITCHAT)
@@ -401,16 +444,22 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     # ContextAssembler 仅用于 VALUE_QUERY，固定进入 sql_generator
     workflow.add_edge("context_assembler", "sql_generator")
 
-    def route_metric_loop(state: AgentState) -> Literal["metric_sql_generator", "metric_cleanup"]:
+    def route_metric_loop(state: AgentState) -> Literal["metric_sql_generator", "metric_cleanup", "plan_review_handler"]:
         loop_status = state.get("loop_status")
         if loop_status in ["completed", "failed"]:
-            return "metric_cleanup"  # 先清理再返回响应
+            return "metric_cleanup"
+        if loop_status == "awaiting_review":
+            return "plan_review_handler"
         return "metric_sql_generator"
 
     workflow.add_conditional_edges(
         "metric_loop_planner",
         route_metric_loop,
-        {"metric_sql_generator": "metric_sql_generator", "metric_cleanup": "metric_cleanup"}
+        {
+            "metric_sql_generator": "metric_sql_generator",
+            "metric_cleanup": "metric_cleanup",
+            "plan_review_handler": "plan_review_handler"
+        }
     )
     
     # Metric SQL Generator 后的条件路由（关键修复：SQL生成错误时不进入executor）
@@ -563,9 +612,27 @@ def create_graph(llm_client, embedding_client=None, db_connection=None, sql_mode
     
     # 澄清返回直接结束
     workflow.add_edge("clarification_return", END)
+
+    # 计划审核节点后的条件路由
+    def route_after_plan_review(state: AgentState) -> Literal["metric_sql_generator", "metric_loop_planner"]:
+        loop_status = state.get("loop_status")
+        if loop_status == "executing":
+            return "metric_sql_generator"
+        # awaiting_review → 回到 planner 重新生成（用户调整后）
+        return "metric_loop_planner"
+
+    workflow.add_conditional_edges(
+        "plan_review_handler",
+        route_after_plan_review,
+        {
+            "metric_sql_generator": "metric_sql_generator",
+            "metric_loop_planner": "metric_loop_planner"
+        }
+    )
     
     # 编译（增加 Checkpointer 支持多轮对话记忆）
-    memory = MemorySaver()
+    serde = JsonPlusSerializer().with_msgpack_allowlist([IntentType])
+    memory = MemorySaver(serde=serde)
     app = workflow.compile(checkpointer=memory)
     
     return app

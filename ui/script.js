@@ -35,6 +35,11 @@ const app = createApp({
         const schemaData = ref(null);
         const schemaLoading = ref(false);
 
+        // 计划审核相关
+        const planReviewVisible = ref(false);
+        const planReviewData = ref(null);
+        const planReviewAdjustments = ref('');
+
         // 当前回答的步骤（用于流式显示）
         const currentSteps = ref([]);
 
@@ -1124,7 +1129,7 @@ const app = createApp({
         };
 
         const sendMessage = async (content) => {
-            if (!content.trim() || isLoading.value) return;
+            if (!content.trim() || isLoading.value || planReviewVisible.value) return;
             if (isAuthenticated() && !activeThreadId.value) {
                 await createNewThread();
             }
@@ -1178,6 +1183,8 @@ const app = createApp({
                 const body = {
                     message: content,
                     session_id: sessionId,
+                    workspace_id: threadList.value.find(t => t.id === activeThreadId.value)?.workspaceId || undefined,
+                    thread_id: activeThreadId.value,
                     enable_suggestions: enableSuggestions.value
                 };
                 const response = await apiFetch(url, {
@@ -1349,6 +1356,11 @@ const app = createApp({
 
                                     tempMessage.isStreaming = false;
                                     triggerRef(messages);
+                                } else if (event.type === 'plan_review') {
+                                    // 计划审核事件 - 弹窗展示给用户
+                                    planReviewVisible.value = true;
+                                    planReviewData.value = event.plan_nodes || [];
+                                    planReviewAdjustments.value = '';
                                 } else if (event.type === 'error') {
                                     // 错误
                                     tempMessage.content = '系统错误：' + event.message;
@@ -1557,6 +1569,263 @@ const app = createApp({
             }
         };
 
+        // 计划审核相关函数
+        const _handleSSEEvent = (event, tempMessage) => {
+            if (event.type === 'start') {
+                console.log('Start:', event.message);
+            } else if (event.type === 'step') {
+                const stepInfo = {
+                    title: event.title,
+                    desc: event.detail || event.message
+                };
+                const existingIndex = tempMessage.steps.findIndex(s => s.title === event.title);
+                if (existingIndex >= 0) {
+                    tempMessage.steps[existingIndex] = stepInfo;
+                } else {
+                    tempMessage.steps.push(stepInfo);
+                }
+                if (event.sql) {
+                    tempMessage.sql = event.sql;
+                }
+                if (event.metric_plan && Array.isArray(event.metric_plan) && event.metric_plan.length > 0) {
+                    const validNodes = event.metric_plan.filter(n => n && n.step_id);
+                    if (!tempMessage.metricPlan) {
+                        tempMessage.metricPlan = validNodes;
+                        tempMessage.metricStepStatuses = {};
+                        tempMessage.metricStepSqls = {};
+                        tempMessage.metricStepResults = {};
+                        validNodes.forEach((node) => {
+                            tempMessage.metricStepStatuses[node.step_id] = 'pending';
+                        });
+                    } else {
+                        tempMessage.metricPlan = validNodes;
+                        validNodes.forEach((node) => {
+                            if (!tempMessage.metricStepStatuses[node.step_id]) {
+                                tempMessage.metricStepStatuses[node.step_id] = 'pending';
+                            }
+                        });
+                    }
+                    triggerRef(messages);
+                }
+                const mSid = event.metric_step_id || '';
+                if (mSid && tempMessage.metricPlan) {
+                    if (event.node === 'metric_sql_generator') {
+                        tempMessage.metricStepStatuses[mSid] = 'running';
+                        if (event.metric_step_sql || event.sql) {
+                            tempMessage.metricStepSqls[mSid] = event.metric_step_sql || event.sql;
+                        }
+                        triggerRef(messages);
+                    }
+                    if (event.node === 'metric_executor') {
+                        if (event.metric_step_result) {
+                            tempMessage.metricStepResults[mSid] = event.metric_step_result;
+                        }
+                        if (event.metric_step_error) {
+                            tempMessage.metricStepStatuses[mSid] = 'failed';
+                            tempMessage.metricStepResults[mSid] = { error: event.metric_step_error };
+                        }
+                        triggerRef(messages);
+                    }
+                    if (event.node === 'metric_observer') {
+                        const obsStatus = event.metric_step_status || '';
+                        if (obsStatus === 'succeeded') {
+                            tempMessage.metricStepStatuses[mSid] = 'succeeded';
+                        } else if (obsStatus.startsWith('failed')) {
+                            tempMessage.metricStepStatuses[mSid] = 'failed';
+                        } else if (obsStatus === 'running') {
+                            tempMessage.metricStepStatuses[mSid] = 'running';
+                        }
+                        triggerRef(messages);
+                    }
+                    if (event.node === 'metric_loop_planner' && tempMessage.metricStepStatuses[mSid] === 'failed') {
+                        tempMessage.metricStepStatuses[mSid] = 'running';
+                        triggerRef(messages);
+                    }
+                }
+                if (event.reasoning) {
+                    typeWriter(tempMessage, 'reasoning', event.reasoning);
+                }
+                if (event.reflection) {
+                    typeWriter(tempMessage, 'reflection', event.reflection);
+                }
+            } else if (event.type === 'result') {
+                tempMessage.content = event.response;
+                tempMessage.needClarification = Boolean(event.need_clarification);
+                tempMessage.clarificationSections = event.need_clarification
+                    ? parseClarificationSections(event.response)
+                    : [];
+                if (event.sql) tempMessage.sql = event.sql;
+                if (event.python_code) tempMessage.pythonCode = event.python_code;
+                if (event.sql_reflection && !tempMessage.reflection) {
+                    typeWriter(tempMessage, 'reflection', event.sql_reflection);
+                }
+                if (Object.prototype.hasOwnProperty.call(event, 'data')) {
+                    tempMessage.sqlResult = event.data;
+                    tempMessage.totalCount = event.total_count || 0;
+                    tempMessage.isTruncated = event.is_truncated || false;
+                }
+                if (event.suggested_questions) {
+                    suggestedQuestions.value = event.suggested_questions;
+                }
+                tempMessage.isStreaming = false;
+                triggerRef(messages);
+            } else if (event.type === 'plan_review') {
+                planReviewVisible.value = true;
+                planReviewData.value = event.plan_nodes || [];
+                planReviewAdjustments.value = '';
+            } else if (event.type === 'error') {
+                tempMessage.content = '系统错误：' + event.message;
+                tempMessage.isStreaming = false;
+            }
+        };
+
+        const _readSSEStream = async (response, tempMessage) => {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+                        if (data === '[DONE]') {
+                            tempMessage.isStreaming = false;
+                            break;
+                        }
+                        try {
+                            const event = JSON.parse(data);
+                            _handleSSEEvent(event, tempMessage);
+                        } catch (e) {
+                            console.error('解析事件失败:', e, data);
+                        }
+                    }
+                }
+                scrollToBottom();
+            }
+        };
+
+        const _makeAssistantMessage = () => ({
+            role: 'assistant',
+            content: '',
+            steps: [],
+            sql: null,
+            pythonCode: null,
+            sqlResult: null,
+            isStreaming: true,
+            activeCollapse: ['1'],
+            reasoning: '',
+            reflection: '',
+            isChartLoading: false,
+            isReplayLoading: false,
+            metricPlan: null,
+            metricStepStatuses: {},
+            metricStepSqls: {},
+            metricStepResults: {},
+            _expandedSqls: {}
+        });
+
+        const submitPlanReviewDecision = async (approved, adjustments = '') => {
+            planReviewVisible.value = false;
+
+            isLoading.value = true;
+            currentSteps.value = [];
+
+            scrollToBottom();
+            currentAbortController = new AbortController();
+
+            // 复用最后一条 assistant 消息（不创建新对话框）
+            const tempMessage = messages.value.length > 0
+                ? messages.value[messages.value.length - 1]
+                : null;
+            if (!tempMessage || tempMessage.role !== 'assistant') {
+                messages.value.push(_makeAssistantMessage());
+            }
+            const msgRef = messages.value[messages.value.length - 1];
+            msgRef.isStreaming = true;
+            msgRef.content = '';
+            msgRef.steps = [];
+            msgRef.sql = null;
+            msgRef.pythonCode = null;
+            msgRef.sqlResult = null;
+
+            try {
+                const body = {
+                    session_id: sessionId,
+                    workspace_id: threadList.value.find(t => t.id === activeThreadId.value)?.workspaceId || undefined,
+                    thread_id: activeThreadId.value,
+                    approved: approved,
+                    adjustments: adjustments
+                };
+                const response = await apiFetch('/api/chat/resume-plan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: currentAbortController.signal
+                });
+
+                if (!response.ok) {
+                    const errPayload = await response.json().catch(() => ({}));
+                    throw new Error(errPayload.detail || 'API 请求失败');
+                }
+                await _readSSEStream(response, msgRef);
+
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    if (messages.value.length > 0) {
+                        const lastMsg = messages.value[messages.value.length - 1];
+                        if (lastMsg.role === 'assistant') {
+                            lastMsg.isStreaming = false;
+                            if (!lastMsg.content) lastMsg.content = '查询已被用户中止';
+                        }
+                    }
+                } else {
+                    messages.value.pop();
+                    messages.value.push({
+                        role: 'assistant',
+                        content: '抱歉，系统出现错误：' + error.message
+                    });
+                }
+            } finally {
+                isLoading.value = false;
+                currentAbortController = null;
+                upsertActiveThreadFromRuntime();
+                saveClientState();
+                scrollToBottom();
+            }
+        };
+
+        const approvePlanReview = () => {
+            submitPlanReviewDecision(true);
+        };
+
+        const rejectPlanReview = () => {
+            const adjustments = planReviewAdjustments.value.trim();
+            if (!adjustments) {
+                ElMessage.warning('请输入调整描述');
+                return;
+            }
+            submitPlanReviewDecision(false, adjustments);
+        };
+
+        const cancelPlanReview = async () => {
+            planReviewVisible.value = false;
+            planReviewData.value = null;
+            planReviewAdjustments.value = '';
+            try {
+                const wsId = threadList.value.find(t => t.id === activeThreadId.value)?.workspaceId || '';
+                await fetch(`/api/chat/cancel-plan?session_id=${sessionId}&workspace_id=${encodeURIComponent(wsId)}&thread_id=${encodeURIComponent(activeThreadId.value)}`, { method: 'POST' });
+            } catch (e) {
+                console.error('取消计划审核失败:', e);
+            }
+        };
+
         return {
             messages,
             inputMessage,
@@ -1616,7 +1885,14 @@ const app = createApp({
             // 数据库页面
             schemaData,
             schemaLoading,
-            loadSchemaData
+            loadSchemaData,
+            // 计划审核
+            planReviewVisible,
+            planReviewData,
+            planReviewAdjustments,
+            approvePlanReview,
+            rejectPlanReview,
+            cancelPlanReview
         };
     }
 });

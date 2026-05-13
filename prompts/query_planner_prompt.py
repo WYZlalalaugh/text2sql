@@ -99,6 +99,17 @@ _ITERATIVE_METRIC_PLANNER_PROMPT = """你是数据分析规划师，将用户问
 - `window`: 窗口函数
 - `derive`: 派生计算（归一化、加权）
 
+
+**aggregate步骤的description必须包含**：
+1. GROUP BY的具体字段（如"按school_id, province分组"）
+2. 聚合函数的具体含义（如"SUM(value * level3_weight * level2_weight) AS school_total_score得到每校总分"）
+3. 如果是多层聚合，写明每层的粒度转换
+4. **必须指定输出列名**（如`AS school_total_score`），下游步骤通过该列名引用，禁止使用模糊名称让SQL generator猜测
+5. 区分"聚合键"和"透传键"：如"按school_id聚合（province作为透传字段供下游使用）"
+6. `description`不能只写笼统意图，必须写明聚合路径和计算逻辑
+
+**排序和排名不单独拆步骤（关键！）**：ORDER BY和RANK()/ROW_NUMBER()等窗口函数应合并到最终aggregate步骤中，禁止单独开一个步骤只做排序。
+
 ## 核心规则
 1. **步骤数量**：简单2-3步，中等3-5步，复杂5-7步，**禁止超过8步**
 2. **步骤合并**：一个步骤可包含2-3个相关逻辑，不过度拆分
@@ -116,7 +127,7 @@ _ITERATIVE_METRIC_PLANNER_PROMPT = """你是数据分析规划师，将用户问
 ## required_tables 推断（关键！）
 `required_tables`必须覆盖所有数据来源：
 1. **包含所有`expected_outputs`字段的来源表**
-2. **包含`filters`中字段所在的表**  
+2. **包含`filters`中字段所在的表**
 3. **包含JOIN操作所需的所有表**
 4. **依赖前序步骤时，包含`step_XX_output`**
 
@@ -142,7 +153,7 @@ _ITERATIVE_METRIC_PLANNER_PROMPT = """你是数据分析规划师，将用户问
 **正确示例**：
 ```json
 {
-  "step_id": "s1", 
+  "step_id": "s1",
   "expected_outputs": ["school_id", "province", "value", "level1_weight", "level1_name"],
   "filters": [{"field": "level1_name", "operator": "like", "value": "基础设施"}]
 }
@@ -151,8 +162,11 @@ _ITERATIVE_METRIC_PLANNER_PROMPT = """你是数据分析规划师，将用户问
 
 ## 指标计算规则
 - **归一化**：Min-Max公式 (x - min_i) / (max_i - min_i)
-- **公平比较**：跨省对比必须计算"校均分"（总分/学校数），禁止直接SUM
-- **权重计算**：三级指标值 × 三级权重 × 二级权重
+- **公平比较（关键！）**：跨省份/跨区域对比必须计算"校均分"，**禁止直接SUM或直接AVG**。校均分的聚合路径必须分两步：
+  1. **先按学校汇总**：按(school_id, province)分组，计算每校加权总分，输出列名必须明确指定（如`AS school_total_score`），粒度为每校一行
+  2. **再按省份计算校均分**：公式为 **每省加权总分之和 / 该省学校数**，即 `SUM(school_total_score) / COUNT(school_id)`，**禁止只写AVG(school_total_score)**，必须明确写成SUM/COUNT的形式，避免SQL generator对中间表粒度产生歧义
+  因此，**涉及"校均分"的步骤必须拆为两步**：一个aggregate步骤按(school_id + 维度)汇总，另一个aggregate步骤按(省份/区域)计算SUM/COUNT。description必须写明完整计算公式，例如："按province聚合，计算校均分 = SUM(school_total_score) / COUNT(school_id)，RANK()降序排名"，**禁止只写笼统的"校均分"、"各省份平均"或"AVG"**
+- **权重计算**：一级指标=三级指标值 × 三级权重 × 二级权重；二级指标=三级指标值 × 三级权重.
 
 ## 输出约束
 - 只输出JSON，不要任何额外文字
@@ -245,4 +259,123 @@ def build_iterative_metric_planner_prompt(
         query=query,
         execution_history=execution_history or "（无）",
         observations=observations or "（无）",
+    )
+
+
+_PLAN_REVIEW_ADJUSTMENT_PROMPT = """你是数据分析规划师，用户对当前计划提出了调整要求，你需要根据调整重新生成计划。
+
+## 核心约束
+1. **格式必须完全一致**：输出必须保持原有plan_nodes JSON格式，字段结构不变
+2. **step_id连贯**：保持step_id编号风格（s1, s2, s3...），顺序连续
+3. **depends_on链完整**：确保依赖关系正确，不存在悬空引用
+4. **仅输出JSON**：不要输出任何额外文字或解释
+5. **遵循原计划的所有规则**：步骤类型、expected_outputs完整性、required_tables推断等
+
+## 步骤类型
+- `filter`: 筛选数据（WHERE）
+- `aggregate`: 聚合计算（GROUP BY）
+- `join`: 表关联
+- `window`: 窗口函数
+- `derive`: 派生计算（归一化、加权）
+
+**aggregate步骤的description必须包含**：
+1. GROUP BY的具体字段
+2. 聚合函数的具体含义，必须指定输出列名（如`AS school_total_score`）
+3. 如果是多层聚合，写明每层的粒度转换
+4. 区分"聚合键"和"透传键"
+5. 排序和排名合并到最终aggregate步骤中，禁止单独开步骤只做排序
+
+## 指标计算规则
+- **公平比较（关键！）**：跨省份对比必须计算"校均分"，禁止直接SUM或直接AVG。校均分必须拆为两步aggregate：
+  1. 先按(school_id, province)汇总得到每校加权总分，必须指定输出列名（如`AS school_total_score`）
+  2. 再按(省份/区域)计算校均分 = SUM(school_total_score) / COUNT(school_id)，禁止只写AVG
+
+## 输出格式
+```json
+{
+  "goal": "业务目标简述",
+  "success_criteria": ["标准1", "标准2"],
+  "plan_nodes": [
+    {
+      "step_id": "s1",
+      "intent_type": "filter|aggregate|join|window|derive",
+      "description": "步骤描述",
+      "required_tables": ["表名"],
+      "depends_on": [],
+      "filters": [{"field": "", "operator": "like", "value": ""}],
+      "expected_outputs": ["字段1", "字段2"],
+      "expected_grain": ["主键字段"],
+      "success_criteria": "验收条件"
+    }
+  ],
+  "reasoning": "规划思路"
+}
+```
+"""
+
+_PLAN_REVIEW_ADJUSTMENT_TEMPLATE = """{system_prompt}
+
+---
+
+## 用户原始查询
+{query}
+
+---
+
+## 当前计划（需要调整）
+```json
+{original_plan}
+```
+
+---
+
+## 用户调整要求
+{adjustments}
+
+---
+
+## 指标体系
+```json
+{metrics}
+```
+
+---
+
+## 数据库 Schema
+```json
+{schema}
+```
+
+---
+
+请根据用户的调整要求，重新生成完整的执行计划（JSON格式），保持原有plan_nodes格式：
+"""
+
+
+def build_plan_review_adjustment_prompt(
+    original_plan: str,
+    adjustments: str,
+    metrics: str,
+    schema: str,
+    query: str,
+) -> str:
+    """Build plan review adjustment prompt.
+
+    Args:
+        original_plan: JSON string of the original plan nodes
+        adjustments: User's natural language adjustment description
+        metrics: JSON string of metric hierarchy
+        schema: JSON string of database schema
+        query: Original user query
+
+    Returns:
+        Complete prompt string for plan adjustment
+    """
+    return _PLAN_REVIEW_ADJUSTMENT_TEMPLATE.format(
+        system_prompt=_PLAN_REVIEW_ADJUSTMENT_PROMPT,
+        original_plan=original_plan,
+        adjustments=adjustments,
+        metrics=metrics,
+        schema=schema,
+        query=query,
     )
