@@ -252,6 +252,38 @@ const app = createApp({
         const activeThreadId = ref('');
         let suspendPersist = false;
 
+        // 侧边栏拖拽调整宽度
+        const sidebarWidth = ref(280);
+        let isResizingSidebar = false;
+        let resizeStartX = 0;
+        let resizeStartWidth = 0;
+
+        const startResizeSidebar = (e) => {
+            isResizingSidebar = true;
+            resizeStartX = e.clientX;
+            resizeStartWidth = sidebarWidth.value;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            document.addEventListener('mousemove', onResizeSidebar);
+            document.addEventListener('mouseup', stopResizeSidebar);
+        };
+
+        const onResizeSidebar = (e) => {
+            if (!isResizingSidebar) return;
+            const delta = e.clientX - resizeStartX;
+            const newWidth = Math.max(200, Math.min(400, resizeStartWidth + delta));
+            sidebarWidth.value = newWidth;
+            document.documentElement.style.setProperty('--sidebar-width', `${newWidth}px`);
+        };
+
+        const stopResizeSidebar = () => {
+            isResizingSidebar = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', onResizeSidebar);
+            document.removeEventListener('mouseup', stopResizeSidebar);
+        };
+
         const createThreadId = () => `thread_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const isAuthenticated = () => Boolean(authToken.value);
         const getActiveDraftKey = () => `${LOCAL_DRAFT_KEY}:${activeThreadId.value || 'default'}`;
@@ -652,6 +684,36 @@ const app = createApp({
             applyThreadToRuntime(target);
             saveClientState();
             scrollToBottom();
+        };
+
+        const deleteThread = async (threadId) => {
+            if (isLoading.value) {
+                ElMessage.warning('请等待当前查询完成后再删除');
+                return;
+            }
+            if (threadList.value.length <= 1) {
+                ElMessage.warning('至少保留一个对话');
+                return;
+            }
+            const idx = threadList.value.findIndex((t) => t.id === threadId);
+            if (idx < 0) return;
+
+            if (isAuthenticated()) {
+                try {
+                    await apiFetch(`/api/chat/delete-thread?thread_id=${encodeURIComponent(threadId)}&session_id=${sessionId}`, { method: 'POST' });
+                } catch (e) {
+                    console.error('删除对话失败:', e);
+                }
+            }
+
+            threadList.value.splice(idx, 1);
+
+            // 如果删除的是当前活跃对话，切换到最近的对话
+            if (threadId === activeThreadId.value) {
+                const next = threadList.value[0];
+                applyThreadToRuntime(next);
+            }
+            saveClientState();
         };
 
         const restoreLegacyClientState = () => {
@@ -1845,6 +1907,8 @@ const app = createApp({
             formatThreadTime,
             createNewThread,
             switchThread,
+            deleteThread,
+            startResizeSidebar,
             hasResultData,
             hasReplaySource,
             canViewData,

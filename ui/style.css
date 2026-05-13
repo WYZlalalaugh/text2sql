@@ -252,6 +252,17 @@ body {
     flex-direction: column;
 }
 
+.sidebar-resizer {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+.sidebar-resizer:hover {
+    background: var(--border-strong);
+}
+
 .sidebar-header {
     padding: 20px 16px 16px;
     display: flex;
@@ -302,6 +313,27 @@ body {
     color: var(--text-primary);
     font-weight: 500;
     transform: translateX(2px);
+}
+
+.thread-delete-btn {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: auto;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+.thread-delete-btn:hover {
+    color: #e53e3e;
+    opacity: 1;
+}
+.thread-item:hover .thread-delete-btn {
+    display: block;
 }
 
 .thread-icon {

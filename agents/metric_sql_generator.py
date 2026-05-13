@@ -246,14 +246,18 @@ def _build_normal_prompt(
    - **错误示例1**：```sql SELECT * FROM t1 WHERE val = (SELECT MIN(val) FROM t1) ``` — t1被打开两次
    - **错误示例2**：```sql WITH t AS (...) SELECT * FROM t CROSS JOIN (SELECT * FROM t) ```
    - **正确做法**：用窗口函数或ORDER BY替代子查询引用同一临时表，如 `SELECT ..., RANK() OVER (ORDER BY val ASC) FROM t1`
-9. **窗口函数规则（关键！）**：
-   - 不能在 RANK()、ROW_NUMBER() 等窗口函数的 ORDER BY 子句中嵌套其他窗口函数（如 MIN() OVER、MAX() OVER）
-   - **错误示例**：`RANK() OVER (ORDER BY (value - MIN(value) OVER ()) / (MAX(value) OVER () - MIN(value) OVER ()))`
-   - **正确做法**：先用子查询或CTE计算归一化值，再在外面用 RANK()
-10. **只输出MySQL 8.0兼容的SQL代码**，严禁生成其他数据库方言
-11. 绝对不要输出"SQL:", "解释:", "思路:", markdown 代码块等非SQL内容
-12. 输出格式必须为：<SQL>...SQL语句...</SQL>
-13. **筛选值必须直接取自"计划中的筛选条件"的value字段（关键！）**：禁止从描述文本推断筛选值；若描述与filters矛盾，以filters为准
+9. **预计算归一化值（关键！）**：
+   - `school_answers` 表已预计算 `normalized_value` 列，直接使用该列进行加权计算
+   - **禁止**使用窗口函数 MIN() OVER / MAX() OVER 做归一化，数据已经归一化好了
+   - 正确做法：`SUM(normalized_value * level3_weight * level2_weight)`
+   - 错误做法：`(value - MIN(value) OVER (...)) / (MAX(value) OVER (...) - MIN(value) OVER (...))`
+10. **窗口函数排序规则**：
+   - 排名类窗口函数（RANK、ROW_NUMBER）直接使用 normalized_value 或聚合结果排序
+   - 禁止在窗口函数 ORDER BY 中嵌套 MIN/MAX OVER 等归一化窗口函数
+11. **只输出MySQL 8.0兼容的SQL代码**，严禁生成其他数据库方言
+12. 绝对不要输出"SQL:", "解释:", "思路:", markdown 代码块等非SQL内容
+13. 输出格式必须为：<SQL>...SQL语句...</SQL>
+14. **筛选值必须直接取自"计划中的筛选条件"的value字段（关键！）**：禁止从描述文本推断筛选值；若描述与filters矛盾，以filters为准
 
 ## 字段名使用规范（关键！）
 **正确示例**：
@@ -375,11 +379,17 @@ def _build_retry_prompt(
    - **禁止**在同一查询中多次引用带别名的临时表（CTE），会导致"Can't reopen table"错误
    - **错误示例**：```sql WITH t AS (...) SELECT * FROM _metric_step_s3 t CROSS JOIN (SELECT * FROM _metric_step_s3) mm ```
    - **正确做法**：使用子查询代替CTE，或避免对同一临时表使用别名多次引用
-10. **窗口函数规则（关键！）**：
-    - 不能在 RANK()、ROW_NUMBER() 等窗口函数的 ORDER BY 子句中嵌套其他窗口函数
-11. **只生成MySQL 8.0兼容的SQL代码**
-12. 输出格式必须为：<SQL>...SQL语句...</SQL>
-13. **筛选值必须直接取自"计划中的筛选条件"的value字段（关键！）**：禁止从描述文本推断筛选值；若描述与filters矛盾，以filters为准
+10. **预计算归一化值（关键！）**：
+    - `school_answers` 表已预计算 `normalized_value` 列，直接使用该列进行加权计算
+    - **禁止**使用窗口函数 MIN() OVER / MAX() OVER 做归一化，数据已经归一化好了
+    - 正确做法：`SUM(normalized_value * level3_weight * level2_weight)`
+    - 错误做法：`(value - MIN(value) OVER (...)) / (MAX(value) OVER (...) - MIN(value) OVER (...))`
+11. **窗口函数排序规则**：
+    - 排名类窗口函数（RANK、ROW_NUMBER）直接使用 normalized_value 或聚合结果排序
+    - 禁止在窗口函数 ORDER BY 中嵌套 MIN/MAX OVER 等归一化窗口函数
+12. **只生成MySQL 8.0兼容的SQL代码**
+13. 输出格式必须为：<SQL>...SQL语句...</SQL>
+14. **筛选值必须直接取自"计划中的筛选条件"的value字段（关键！）**：禁止从描述文本推断筛选值；若描述与filters矛盾，以filters为准
 
 ## 字段名使用规范
 - 仅使用"上游临时表结构"和"数据库Schema"中明确列出的字段名
@@ -611,8 +621,9 @@ def _clean_sql(sql: str) -> str:
         candidate = candidate[: semicolon_idx + 1].strip()
         return candidate
 
-    # 无分号时，按行裁剪尾部解释文本
-    return _trim_non_sql_trailing_lines(candidate)
+    # 无分号时，直接补上分号返回
+    # 不做行级裁剪——截断SQL比多留几行解释文本更危险
+    return candidate.rstrip() + ";"
 
 
 def _looks_like_sql(sql: str) -> bool:
@@ -636,40 +647,6 @@ def _extract_tagged_sql(text: str) -> str:
         return fenced_match.group(1).strip()
 
     return ""
-
-
-def _trim_non_sql_trailing_lines(candidate: str) -> str:
-    """无分号时，尽量保留 SQL 主体并剔除尾部解释文本。"""
-    lines = [line.strip() for line in candidate.split("\n") if line.strip()]
-    if not lines:
-        return candidate.strip()
-
-    sql_line_pattern = re.compile(
-        r"^(SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|"
-        r"INNER\s+JOIN|OUTER\s+JOIN|ON|UNION|WITH|AS|CREATE\s+TABLE|INSERT\s+INTO|VALUES|"
-        r"AND|OR|CASE|WHEN|THEN|ELSE|END|,|\)|\()",
-        re.IGNORECASE,
-    )
-
-    kept: list[str] = []
-    for idx, line in enumerate(lines):
-        if idx == 0:
-            kept.append(line)
-            continue
-
-        if sql_line_pattern.match(line):
-            kept.append(line)
-            continue
-
-        # 行内仍可能是 SQL 续写（例如 "score DESC"）
-        if re.match(r"^[a-zA-Z_][\w\.]*\s*(=|>|<|>=|<=|LIKE|IN|BETWEEN|DESC|ASC)\b", line, re.IGNORECASE):
-            kept.append(line)
-            continue
-
-        # 非 SQL 风格行，视为解释文本开始，停止
-        break
-
-    return "\n".join(kept).strip()
 
 
 def _as_str_list(value: object) -> list[str]:

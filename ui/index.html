@@ -206,6 +206,7 @@
                         </svg>
                         <span class="thread-title">{{ getThreadTitle(thread) }}</span>
                         <span class="thread-time">{{ formatThreadTime(thread) }}</span>
+                        <button class="thread-delete-btn" @click.stop="deleteThread(thread.id)" title="删除对话">&times;</button>
                     </div>
                 </div>
                 <div class="sidebar-footer">
@@ -217,6 +218,9 @@
                     </div>
                 </div>
             </aside>
+
+            <!-- 拖拽调整宽度的手柄 -->
+            <div class="sidebar-resizer" @mousedown="startResizeSidebar"></div>
 
             <!-- 主内容区 -->
             <main class="content-area">

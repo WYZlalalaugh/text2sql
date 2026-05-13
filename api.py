@@ -826,6 +826,17 @@ async def cancel_plan_review(session_id: str = "default", workspace_id: Optional
     return {"message": "计划审核已取消"}
 
 
+@app.post("/api/chat/delete-thread")
+async def delete_thread(session_id: str = "default", workspace_id: Optional[str] = None, thread_id: Optional[str] = None):
+    """删除指定对话的会话数据"""
+    session_key = _build_session_key(session_id, workspace_id)
+    if session_key in sessions:
+        session = sessions[session_key]
+        _cleanup_session_resources(session)
+        del sessions[session_key]
+    return {"message": "对话已删除"}
+
+
 class PlanResumeRequest(BaseModel):
     session_id: str = "default"
     workspace_id: Optional[str] = None
